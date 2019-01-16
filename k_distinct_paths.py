@@ -21,17 +21,18 @@ class K_Distinct_Paths(object):
 
     def __init__(self):
         ### PARAMS - update as desired
-        self.k = 25           # no. of paths to find
+        self.k = 10           # no. of paths to find
         self.M = float("inf") # a large number for effective blocking of edges
         self.T = 298.         # temperature / K (used to calculate inverse Boltzmann weights)
         self.s = 1            # start node (=1 for example min.data file)
-        self.t = 17           # end node (=3345 for example min.data file, =17 for toy problem)
+        self.t = 3345         # end node (=3345 for example min.data file, =17 for toy problem, =2 for min.data.removed)
         self.costfunc = "noe_ts"    # choose a function for calculating the edge weights based on TS energies. Options:
                                     # noe_ts: Noe's scheme based on inverse Boltzmann weighting of TS energies
                                     # noe_b: Noe's scheme based on inverse Boltzmann weighting of "edge barriers"
                                     # evans: Evans' scheme based on a log-weighted adjacency matrix
-        self.write_epath = False    # write Epath.<PATH> files Y/N
-        self.write_mdf = False      # write min.data.fastest.<PATH> files Y/N
+        self.Natoms = 138           # only needed if costfunc is "wales"
+        self.write_epath = True     # write Epath.<PATH> files Y/N
+        self.write_mdf = True       # write min.data.fastest.<PATH> files Y/N
         self.write_mdf_all = True   # write min.data.fastest.all file Y/N
 
     '''Implementation of Dijkstra's algorithm using a min-priority queue. Used to find shortest path and to find
@@ -46,12 +47,16 @@ class K_Distinct_Paths(object):
         Q = pq1.pq # vertex set with specified priorities
         for i in range(1,n_nodes+1): pq1.add_with_priority(i,self.dist[i-1])
         i = 0
+        Q_maxsize = 0
         while Q:
 #            print ">>>>> ITERATION %i <<<<<" % i
+            if len(Q) > Q_maxsize: Q_maxsize = len(Q)
             try:
                 dist_u, u = pq1.extract_min()
             except pq1.QueueError:
+#                print "QueueError was raised in Dijkstra"
                 break
+#            print "u is:" , u, "dist_u is:", dist_u
             for v, dist_v in G[u].iteritems():
                 alt = self.dist[u-1] + dist_v[0]
                 if alt < self.dist[v-1]:
@@ -59,6 +64,7 @@ class K_Distinct_Paths(object):
                     self.prev[v-1] = u
                     pq1.decrease_priority(v,alt)
             i += 1
+        print "Maximum queue size was: ", Q_maxsize
         print ">>> FASTEST PATH ACCORDING TO DIJKSTRA'S ALGORITHM\n"
         if self.prev[self.t-1] == -1: quit("\nTerminating: No shortest path to end node %i" % self.t)
         P = self.trace_path(G)
@@ -117,7 +123,6 @@ class K_Distinct_Paths(object):
             P = self.trace_path(G)
             sp_tree = K_Distinct_Paths.get_shortest_path_tree(self.prev)
             self.process_writing(P, G, min_energies, ts_energies, path_i+2)
-        if self.write_mdf_all: read_mindata.write_mindatafastestall(self.in_mdf)
 
     '''Find vertices that are coloured "red"'''
     def marchetti_colouring(self, G, pq_m, sp_tree):
@@ -213,12 +218,14 @@ class K_Distinct_Paths(object):
 
     def process_writing(self, path, G, min_energies, ts_energies, path_no):
         if self.write_epath: read_mindata.write_epath(path, G, min_energies, ts_energies, path_no)
+        if self.write_mdf: read_mindata.write_mindatafastest(path, path_no)
         if self.write_mdf_all:
             for step in path:
                 if self.in_mdf[step[0]] == False: self.in_mdf[step[0]] = True
             if path_no == self.k: read_mindata.write_mindatafastestall(self.in_mdf)
 
-    def calc_edge_costs(self, E_TS, E_min1, E_min2):
+    def calc_edge_costs(self, E_TS, E_min1, E_min2, frq_min1, frq_min2=None, frq_ts=None, \
+                        min1_idx=None, min2_idx=None):
         if self.costfunc == "noe_ts": 
             ts_cost1 = np.exp(E_TS/(K_Distinct_Paths.k_B*self.T))
             return ts_cost1, ts_cost1
@@ -228,20 +235,35 @@ class K_Distinct_Paths(object):
 #            return ts_cost1, ts_cost1
             return B_TS, B_TS
         elif self.costfunc == "evans":
+            pass
+            '''
             B_TS_1, B_TS_2 = E_TS - E_min1, E_TS - E_min2
             ts_cost1 = np.exp(B_TS_1/(K_Distinct_Paths.k_B*self.T))
             ts_cost2 = np.exp(B_TS_2/(K_Distinct_Paths.k_B*self.T))
 #            return ts_cost1, ts_cost2
             return B_TS_1, B_TS_2
+            '''
+        elif self.costfunc == "wales":
+            ts_cost1, ts_cost2 = read_mindata.calc_rate_const(E_TS,E_min1,E_min2,frq_min1,frq_min2, \
+                                     frq_ts,self.Natoms,self.T,self.s,self.t,min1_idx,min2_idx)
+            return ts_cost1, ts_cost2
         else: quit("Invalid selection for cost function")
-#        return np.exp(50*E_TS/self.T)
 
-    def build_graph(self, min_energies, ts_energies, ts_conns):
+    def build_graph(self, min_energies, ts_energies, ts_conns, min_frqs=None, ts_frqs=None):
         construct_graph1 = K_Distinct_Paths.Construct_Graph()
+        if self.costfunc == "wales":
+            if min_frqs is None or ts_frqs is None: quit("Must provide frqs for this energy function")
         for i in range(1,np.shape(min_energies)[0]+1): construct_graph1.add_vertex(i)
         for i in range(1,np.shape(ts_energies)[0]+1):
-            ts_cost1, ts_cost2 = self.calc_edge_costs(ts_energies[i-1],min_energies[ts_conns[i-1,0]-1], \
-                                                       min_energies[ts_conns[i-1,1]-1])
+            # need to account for if transition state does not connect two different minima
+            if ts_conns[i-1,0]==ts_conns[i-1,1]: continue
+            if min_frqs is None:
+                ts_cost1, ts_cost2 = self.calc_edge_costs(ts_energies[i-1],min_energies[ts_conns[i-1,0]-1], \
+                                         min_energies[ts_conns[i-1,1]-1])
+            else:
+                ts_cost1, ts_cost2 = self.calc_edge_costs(ts_energies[i-1],min_energies[ts_conns[i-1,0]-1], \
+                                         min_energies[ts_conns[i-1,1]-1],min_frqs[ts_conns[i-1,0]-1], \
+                                         min_frqs[ts_conns[i-1,1]-1],ts_frqs[i-1],ts_conns[i-1,0],ts_conns[i-1,1])
             construct_graph1.add_edge(ts_conns[i-1,0],ts_conns[i-1,1],ts_cost1,i)
             construct_graph1.add_edge(ts_conns[i-1,1],ts_conns[i-1,0],ts_cost2,i) # "bidirected" adjacency list
         return construct_graph1.G
@@ -294,10 +316,11 @@ class K_Distinct_Paths(object):
             pass
 
 if __name__ == "__main__":
-    '''
-    min_energies, ts_energies, ts_conns = read_mindata.get_data()
+#    '''
+    min_energies, ts_energies, ts_conns, min_frqs, ts_frqs = read_mindata.get_data(read_frqs=True)
     k_distinct_paths1 = K_Distinct_Paths()
-    G = k_distinct_paths1.build_graph(min_energies, ts_energies, ts_conns)
+    G = k_distinct_paths1.build_graph(min_energies, ts_energies, ts_conns, min_frqs, ts_frqs)
+    ## WARNING - THIS MAY CAUSE A CRASH
     k_distinct_paths1.dijkstra_ktn(G, min_energies, ts_energies)
     '''
     # A TOY TEST PROBLEM
@@ -315,4 +338,4 @@ if __name__ == "__main__":
             G[u][v] = [e_cost, ts_idx]
     k_distinct_paths1 = K_Distinct_Paths()
     k_distinct_paths1.dijkstra_ktn(G)
-#    '''
+    '''
