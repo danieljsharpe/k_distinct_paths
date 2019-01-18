@@ -36,6 +36,7 @@ SAVE
 TYPE EDGE
     INTEGER :: TS_ID         ! TS ID (line no. in ts.data)
     DOUBLE PRECISION :: W    ! edge weight
+    LOGICAL :: CHILD         ! this edge is included in the shortest path tree
     TYPE(NODE), POINTER :: TO_NODE
     TYPE(NODE), POINTER :: FROM_NODE
     TYPE(EDGE), POINTER :: NEXT_TO
@@ -45,6 +46,7 @@ END TYPE EDGE
 TYPE NODE
     INTEGER :: MIN_ID        ! min ID (line no. in min.data)
     LOGICAL :: VISITED       ! used in Dijkstra routine
+    LOGICAL :: RED           ! whether or not node is coloured "red" in Marchetti-Spaccamella algorithm
     TYPE(EDGE), POINTER :: TOP_TO
     TYPE(EDGE), POINTER :: TOP_FROM
 END TYPE NODE
@@ -83,6 +85,105 @@ TYPE(TS_SEQ), POINTER :: A_TS_PATH
 
 END MODULE TREE_KDP
 
+!-------------------------------------------------------------------------------
+! Module containing the *minimum* priority queue
+!-------------------------------------------------------------------------------
+MODULE PRIORITY_QUEUE_KDP
+USE GRAPH_KDP
+IMPLICIT NONE
+SAVE
+
+TYPE PQ_ENTRY ! entry in the priority queue
+    DOUBLE PRECISION :: PR ! priority value of this object
+    TYPE(NODE), POINTER :: PQ_NODEPTR ! pointer to the object in the queue (of type NODE)
+END TYPE PQ_ENTRY
+
+TYPE PRIORITY_QUEUE
+    TYPE(PQ_ENTRY), ALLOCATABLE :: BUF(:)
+    INTEGER :: PQ_SZ = 0 ! size of the priority queue
+CONTAINS
+    PROCEDURE :: TOP
+    PROCEDURE :: ENQUEUE
+    PROCEDURE :: SIFTDOWN
+    PROCEDURE :: DESTROY
+END TYPE PRIORITY_QUEUE
+
+TYPE(PRIORITY_QUEUE) :: KDP_PQ
+
+CONTAINS
+
+! return PQ_ENTRY object that is at top of (i.e. first in) priority queue
+FUNCTION TOP(THIS) RESULT (RES)
+    CLASS(PRIORITY_QUEUE) :: THIS
+    TYPE(PQ_ENTRY) :: RES
+
+    RES = THIS%BUF(1)
+    THIS%BUF(1) = THIS%BUF(THIS%PQ_SZ)
+    THIS%PQ_SZ = THIS%PQ_SZ - 1
+    CALL THIS%SIFTDOWN(1)
+END FUNCTION TOP
+
+! push a node object onto PRIORITY_QUEUE structure "this", at an appropriate
+! position in the queue
+SUBROUTINE ENQUEUE(THIS, PR, PQ_NODEPTR)
+    CLASS(PRIORITY_QUEUE), INTENT(INOUT) :: THIS
+    DOUBLE PRECISION :: PR
+    TYPE(NODE), POINTER :: PQ_NODEPTR
+    TYPE(PQ_ENTRY) :: X
+    TYPE(PQ_ENTRY), ALLOCATABLE :: TMP(:)
+    INTEGER :: i
+
+    X%PR = PR
+    X%PQ_NODEPTR => PQ_NODEPTR
+    THIS%PQ_SZ = THIS%PQ_SZ+1
+    IF (.NOT. ALLOCATED(THIS%BUF)) ALLOCATE(THIS%BUF(1))
+    IF (SIZE(THIS%BUF)<THIS%PQ_SZ) THEN
+        ALLOCATE(TMP(2*size(THIS%BUF)))
+        TMP(1:THIS%PQ_SZ-1) = THIS%BUF
+        CALL MOVE_ALLOC(TMP, THIS%BUF)
+    ENDIF
+    THIS%BUF(THIS%PQ_SZ) = X
+    i = THIS%PQ_SZ
+    DO
+        i = i / 2
+        IF (i==0) EXIT
+        CALL THIS%SIFTDOWN(i)
+    ENDDO
+END SUBROUTINE ENQUEUE
+
+! traverse the priority_queue structure to insert the node object at the
+! correct position in the queue
+SUBROUTINE SIFTDOWN(THIS, a)
+    CLASS (PRIORITY_QUEUE) :: THIS
+    INTEGER :: a, PARENT, CHILD
+
+    ASSOCIATE (X => THIS%BUF)
+    PARENT = a
+    DO WHILE(PARENT*2 <= THIS%PQ_SZ)
+        CHILD = PARENT*2
+        IF (CHILD+1 <= THIS%PQ_SZ) THEN
+            IF (X(CHILD+1)%PR < X(CHILD)%PR) THEN
+                CHILD = CHILD+1
+            ENDIF
+        ENDIF
+        IF (X(PARENT)%PR > X(CHILD)%PR) THEN
+            X([CHILD, PARENT]) = X([PARENT, CHILD])
+            PARENT = CHILD
+        ELSE
+            EXIT
+        ENDIF
+    ENDDO
+    END ASSOCIATE
+END SUBROUTINE SIFTDOWN
+
+! deallocate the memory associated with a priority_queue object
+SUBROUTINE DESTROY(THIS)
+    CLASS(PRIORITY_QUEUE), INTENT(INOUT) :: THIS
+    DEALLOCATE(THIS%BUF)
+END SUBROUTINE DESTROY
+
+END MODULE PRIORITY_QUEUE_KDP
+
 
 !-------------------------------------------------------------------------------
 ! Subroutine for finding the k shortest "distinct" paths
@@ -99,9 +200,15 @@ IMPLICIT NONE
 EXTERNAL MAKED4
 EXTERNAL RATECONST_SETUP
 
-INTEGER :: i, j
+INTEGER :: i, j, Z
 INTEGER :: LJ1, LJ2  ! reactant and product minimum, respectively
-TYPE(EDGE), POINTER :: TSEDGEPTR
+DOUBLE PRECISION :: PRVAL
+TYPE(NODE) :: MINNODEOBJ
+TYPE(PQ_ENTRY) :: PQENTRYOBJ
+TYPE(NODE), POINTER :: MINNODEPTR
+TYPE(EDGE), POINTER :: TSEDGEPTR ! general use pointer to edge
+TYPE(EDGE), POINTER :: RLEDGEPTR ! pointer to the rate-limiting edge
+TYPE(PQ_ENTRY), POINTER :: PQENTRYPTR
 ! args to MAKED4 external subroutine and related quantities
 DOUBLE PRECISION :: DMATMC(NTS,2), KSUM(NMIN)
 INTEGER :: NCOL(NMIN), NVAL(NCONNMAX,NMIN), INDEX_TS(NCONNMAX,NMIN)
@@ -152,12 +259,14 @@ ENDDO
 
 DO i = 1, 2*NTS ! Nullify all pointers for edges (representing transition states) (NB bidirectional)
     NULLIFY(TS_EDGES(i)%FROM_NODE,TS_EDGES(i)%TO_NODE,TS_EDGES(i)%NEXT_TO,TS_EDGES(i)%NEXT_FROM)
+    TS_EDGES(i)%CHILD = .FALSE.
 ENDDO
 
 ! node IDs are equal to positions of minima in the array read from min.data
 DO i = 1, NMIN
     MIN_NODES(i)%MIN_ID = 0
     MIN_NODES(i)%VISITED = .FALSE.
+    MIN_NODES(i)%RED = .FALSE.
     IF (NCOL(i)==0) CYCLE ! min has no neighbours - MIN_ID = 0 is therefore used to signal an invalid node
     MIN_NODES(i)%MIN_ID = i
 ENDDO
@@ -266,6 +375,29 @@ NULLIFY(TSEDGEPTR)
 !ENDDO
 !NULLIFY(TSEDGEPTR)
 
+PRINT *, 'experimenting with the PRIORITY_QUEUE data structure'
+NULLIFY(MINNODEPTR)
+PRINT *, 'building a priority queue:'
+PRVAL = 1.0D0
+DO j = 1, 10
+    IF (.NOT. MIN_NODES(i)%MIN_ID==0) THEN
+        MINNODEPTR => MIN_NODES(i)
+        CALL KDP_PQ%ENQUEUE(PRVAL,MINNODEPTR)
+        PRVAL = PRVAL + 0.5D0
+    ENDIF
+    i = i+1
+ENDDO
+NULLIFY(MINNODEPTR)
+PRINT *, 'printing the priority queue:'
+DO WHILE (KDP_PQ%PQ_SZ>0)
+    PQENTRYOBJ = KDP_PQ%TOP()
+    MINNODEPTR => PQENTRYOBJ%PQ_NODEPTR
+    PRINT *, 'min idx: ', MINNODEPTR%MIN_ID, 'priority value: ',PQENTRYOBJ%PR
+ENDDO
+NULLIFY(MINNODEPTR)
+PRINT *, 'deallocating the priority queue object...'
+CALL KDP_PQ%DESTROY()
+
 !!! Now the algorithm of Frigioni, Marchetti-Spaccamella & Nanni
 ! First find the initial shortest path tree by Dijkstra's algorithm
 CALL DIJKSTRA_KDP(LJ1)
@@ -274,12 +406,28 @@ CALL DIJKSTRA_KDP(LJ1)
 ! note a null parent node indicates no parent exists (true for the 'start' minimum only)
 PRINT *, 'printing the shortest path tree'
 i = LJ2
+TSEDGEPTR => SP_TREE(i)%PARENT_TS
+NULLIFY(RLEDGEPTR)
 PRINT *, 'min:',SP_TREE(i)%MIN_ID
 DO WHILE (ASSOCIATED(SP_TREE(i)%PARENT_NODE))
-    PRINT *, 'min:',SP_TREE(i)%PARENT_NODE%MIN_ID,'ts:',SP_TREE(i)%PARENT_TS%TS_ID,'w:',SP_TREE(i)%PARENT_TS%W
+    IF (.NOT. ASSOCIATED(RLEDGEPTR) .OR. TSEDGEPTR%W > RLEDGEPTR%W) THEN
+        RLEDGEPTR => TSEDGEPTR
+    ENDIF
+    PRINT *, 'min:',SP_TREE(i)%PARENT_NODE%MIN_ID,'ts:',SP_TREE(i)%PARENT_TS%TS_ID,'w:',SP_TREE(i)%PARENT_TS%W, &
+             '    child?:',SP_TREE(i)%PARENT_TS%CHILD
     ! PRINT *, '                    ',TS_EDGES(SP_TREE(i)%PARENT_TS%TS_ID)%W,TS_EDGES(SP_TREE(i)%PARENT_TS%TS_ID+NTS)%W
     i = SP_TREE(i)%PARENT_NODE%MIN_ID
+    TSEDGEPTR => SP_TREE(i)%PARENT_TS
 ENDDO
+PRINT *, 'rate limiting edge:'
+PRINT *, 'from:',RLEDGEPTR%FROM_NODE%MIN_ID,'to:',RLEDGEPTR%TO_NODE%MIN_ID,'W:',RLEDGEPTR%W
+RLEDGEPTR%W = HUGE(0.0D0) ! block the rate-limiting edge
+! queue the owner node of the rate-limiting edge
+CALL KDP_PQ%ENQUEUE(SP_TREE(RLEDGEPTR%TO_NODE%MIN_ID)%CURR_DIST,RLEDGEPTR%TO_NODE)
+NULLIFY(RLEDGEPTR)
+
+! Now find nodes in the shortest path tree where we need to check for alternative connections
+CALL MARCHETTI_COLOURING()
 
 !!! cleanup
 ! nullifying all pointers in derived data types
@@ -303,14 +451,75 @@ END SUBROUTINE KDISTINCTPATHS
 
 !-------------------------------------------------------------------------------
 ! Subroutine for first step of Marchetti-Spaccamella algorithm:
-! Find vertices that are coloured "red"
+! Find vertices that are coloured "red" (downstream from 'owner' of rate-limiting edge
+! in the shortest path tree)
 !-------------------------------------------------------------------------------
-SUBROUTINE MARCHETTI_COLOURING(LJ1)
+SUBROUTINE MARCHETTI_COLOURING()
 
 USE COMMONS
 USE GRAPH_KDP
 USE TREE_KDP
+USE PRIORITY_QUEUE_KDP
 IMPLICIT NONE
+
+INTEGER :: i
+LOGICAL :: NONRED_SHORTER
+TYPE(PQ_ENTRY) :: PQENTRYOBJ
+TYPE(NODE), POINTER :: MINNODEPTR
+TYPE(EDGE), POINTER :: TSEDGEPTR
+
+NULLIFY(MINNODEPTR,TSEDGEPTR)
+
+i = 0
+PRINT *, 'called MARCHETTI_COLOURING()'
+DO WHILE (KDP_PQ%PQ_SZ>0)
+    NONRED_SHORTER = .FALSE.
+    PQENTRYOBJ = KDP_PQ%TOP()
+    MINNODEPTR => PQENTRYOBJ%PQ_NODEPTR
+    TSEDGEPTR => MINNODEPTR%TOP_TO
+    PRINT *, 'looping over TO edges to find any NONRED_SHORTER nodes'
+    DO WHILE (ASSOCIATED(TSEDGEPTR))
+        IF (.NOT. MINNODEPTR%RED .AND. &
+            SP_TREE(TSEDGEPTR%FROM_NODE%MIN_ID)%CURR_DIST+TSEDGEPTR%W==SP_TREE(TSEDGEPTR%TO_NODE%MIN_ID)%CURR_DIST) THEN ! quack check this
+            NONRED_SHORTER = .TRUE.
+            ! here vertex should be coloured 'pink', but with double precision edges this situation rarely happens
+        ENDIF
+        MINNODEPTR => TSEDGEPTR%TO_NODE
+        TSEDGEPTR => TSEDGEPTR%NEXT_TO
+    ENDDO
+    NULLIFY(MINNODEPTR,TSEDGEPTR)
+    IF (.NOT. NONRED_SHORTER) THEN
+        MINNODEPTR => PQENTRYOBJ%PQ_NODEPTR
+        MINNODEPTR%RED = .TRUE.
+        TSEDGEPTR => MINNODEPTR%TOP_TO
+        ! trace the shortest path tree to find the children of z and add to the min priority queue
+        ! need to keep a linked list in order to search the children of children
+        PRINT *, 'looping over TO edges to find child nodes of this node'
+        DO WHILE (ASSOCIATED(TSEDGEPTR))
+            IF (TSEDGEPTR%CHILD) THEN ! edge is in the shortest path tree
+                MINNODEPTR => TSEDGEPTR%TO_NODE
+                CALL KDP_PQ%ENQUEUE(SP_TREE(MINNODEPTR%MIN_ID)%CURR_DIST,MINNODEPTR)
+                ! Here, need to add this child node to a linked list (to be searched in a new "inner" DO loop)
+            ENDIF
+            TSEDGEPTR => TSEDGEPTR%NEXT_TO
+        ENDDO
+    ENDIF
+    i = i + 1
+    IF (i==10) THEN
+        PRINT *, 'i is 10, exiting'
+        EXIT
+    ENDIF
+ENDDO
+
+PRINT *, 'the following nodes have been queued by MARCHETTI_COLOURING routine:'
+NULLIFY(MINNODEPTR)
+DO WHILE (KDP_PQ%PQ_SZ>0)
+    PQENTRYOBJ = KDP_PQ%TOP()
+    MINNODEPTR => PQENTRYOBJ%PQ_NODEPTR
+    PRINT *, 'min idx: ', MINNODEPTR%MIN_ID, 'priority value: ',PQENTRYOBJ%PR
+ENDDO
+
+NULLIFY(MINNODEPTR,TSEDGEPTR)
 
 END SUBROUTINE MARCHETTI_COLOURING
 
@@ -325,7 +534,10 @@ SUBROUTINE MARCHETTI_PROCESS_REDS(LJ1)
 USE COMMONS
 USE GRAPH_KDP
 USE TREE_KDP
+USE PRIORITY_QUEUE_KDP
 IMPLICIT NONE
+
+INTEGER :: LJ1
 
 END SUBROUTINE MARCHETTI_PROCESS_REDS
 
@@ -369,7 +581,9 @@ DO i = 1, NMIN ! loop over all minima
         IF (ALT < SP_TREE(TSEDGEPTR%TO_NODE%MIN_ID)%CURR_DIST) THEN
             SP_TREE(TSEDGEPTR%TO_NODE%MIN_ID)%CURR_DIST = ALT
             SP_TREE(TSEDGEPTR%TO_NODE%MIN_ID)%PARENT_NODE => MIN_NODES(n)
+            TSEDGEPTR%CHILD = .FALSE.
             SP_TREE(TSEDGEPTR%TO_NODE%MIN_ID)%PARENT_TS => TSEDGEPTR ! FROM n (parent) TO child ??? IS CORRECT
+            TSEDGEPTR%CHILD = .TRUE. ! edge is included in shortest path tree
             ! use TS_EDGES to access weight in opposite direcn
             !SP_TREE(TSEDGEPTR%TO_NODE%MIN_ID)%PARENT_TS_2 => TS_EDGES(TSEDGEPTR+NTS)
             ! weight TO child FROM parent
@@ -401,7 +615,7 @@ END SUBROUTINE DIJKSTRA_KDP
 
 
 !-------------------------------------------------------------------------------
-! Auxiliary subroutines for updating derived data types
+! Auxiliary subroutines for updating GRAPH derived data type
 !-------------------------------------------------------------------------------
 ! add an incoming edge j -> i to the GRAPH data structure
 SUBROUTINE ADD_TO_EDGE(i,j)
