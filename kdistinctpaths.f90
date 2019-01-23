@@ -442,6 +442,8 @@ CALL KDP_PQ%DESTROY()
 
 CALL MARCHETTI_PROCESS_REDS(LJ1)
 
+CALL KDP_PQ%DESTROY()
+
 !!! cleanup
 ! nullifying all pointers in derived data types
 !DO i = 1, NMIN ! Nullify all pointers for nodes (representing minima)
@@ -568,8 +570,8 @@ PRINT *, 'length of linked list (number of RED nodes):', n
 PRINT *, 'the child nodes are:'
 NULLIFY(DYNLLRED)
 DYNLLRED => HEADLLRED
-DO WHILE(ASSOCIATED(DYNLLRED%NEXTLLENTRY))
-    PRINT *, DYNLLRED%NODE_INLIST%MIN_ID
+DO WHILE (ASSOCIATED(DYNLLRED%NEXTLLENTRY))
+    ! PRINT *, DYNLLRED%NODE_INLIST%MIN_ID
     DYNLLRED => DYNLLRED%NEXTLLENTRY
 ENDDO
 
@@ -592,7 +594,96 @@ USE TREE_KDP
 USE PRIORITY_QUEUE_KDP
 IMPLICIT NONE
 
-INTEGER :: LJ1
+INTEGER :: LJ1, n
+LOGICAL :: NONRED_NBR
+DOUBLE PRECISION :: FLVLZ, FLVLZBEST, EDGECOST
+TYPE(PQ_ENTRY) :: PQENTRYOBJ
+TYPE(NODE), POINTER :: MINNODEPTR, BESTNONREDNBR
+TYPE(EDGE), POINTER :: TSEDGEPTR
+
+PRINT *, 'Called MARCHETTI_PROCESS_REDS()'
+
+n = 0
+NULLIFY(MINNODEPTR,TSEDGEPTR)
+DYNLLRED => HEADLLRED
+DO WHILE (ASSOCIATED(DYNLLRED%NEXTLLENTRY))
+    NULLIFY(BESTNONREDNBR)
+    FLVLZBEST = HUGE(0.D0)
+    NONRED_NBR = .FALSE.
+    MINNODEPTR => DYNLLRED%NODE_INLIST
+    PRINT *, ''
+    PRINT *, 'set MINNODEPTR to min',MINNODEPTR%MIN_ID
+    ! loop over neighbours of the current red node
+    TSEDGEPTR => MINNODEPTR%TOP_FROM
+    PRINT *, 'looping over neighbours of node',MINNODEPTR%MIN_ID
+    DO WHILE (ASSOCIATED(TSEDGEPTR))
+        PRINT *, 'TS ID:',TSEDGEPTR%TS_ID,'from',TSEDGEPTR%FROM_NODE%MIN_ID,'to ', TSEDGEPTR%TO_NODE%MIN_ID
+
+        IF (.NOT. TSEDGEPTR%TO_NODE%RED) THEN
+            PRINT *, 'Found a nonred neighbour'
+            NONRED_NBR = .TRUE.
+            FLVLZ = SP_TREE(TSEDGEPTR%TO_NODE%MIN_ID)%CURR_DIST + TSEDGEPTR%W
+            IF (.NOT. ASSOCIATED(BESTNONREDNBR) .OR. FLVLZ < FLVLZBEST) THEN
+                PRINT *, 'This nonred neighbour is the new best nonred neighbour'
+                BESTNONREDNBR => TSEDGEPTR%TO_NODE
+                EDGECOST = TSEDGEPTR%W
+                FLVLZBEST = FLVLZ
+            ENDIF
+        ENDIF
+        TSEDGEPTR => TSEDGEPTR%NEXT_FROM
+    ENDDO
+    IF (.NOT. NONRED_NBR) THEN ! disclude this node from the shortest path tree
+        PRINT *, 'this node has no nonred neighbour'
+        SP_TREE(MINNODEPTR%MIN_ID)%CURR_DIST = HUGE(0.D0)
+        NULLIFY(SP_TREE(MINNODEPTR%MIN_ID)%PARENT_NODE)
+    ELSE
+        PRINT *, 'the best nonred neighbour of this node is',BESTNONREDNBR%MIN_ID
+        SP_TREE(MINNODEPTR%MIN_ID)%CURR_DIST = SP_TREE(BESTNONREDNBR%MIN_ID)%CURR_DIST + EDGECOST
+        SP_TREE(MINNODEPTR%MIN_ID)%PARENT_NODE => BESTNONREDNBR
+        CALL KDP_PQ%ENQUEUE(SP_TREE(MINNODEPTR%MIN_ID)%CURR_DIST,MINNODEPTR)
+    ENDIF    
+
+    ! loop over nodes in priority queue
+
+    ! go to next node in linked list
+    n = n+1
+    PRINT *, 'n is:', n
+    DYNLLRED => DYNLLRED%NEXTLLENTRY
+    PRINT *, 'deallocating HEADLLRED'
+    DEALLOCATE(HEADLLRED)
+    PRINT *, 'setting HEADLLRED to DYNLLRED'
+    HEADLLRED => DYNLLRED
+ENDDO
+
+NULLIFY(MINNODEPTR,TSEDGEPTR)
+PRINT *, 'printing the priority queue...'
+DO WHILE (KDP_PQ%PQ_SZ>0)
+    PQENTRYOBJ = KDP_PQ%TOP()
+    MINNODEPTR => PQENTRYOBJ%PQ_NODEPTR
+    PRINT *, 'min idx: ', MINNODEPTR%MIN_ID, 'priority value: ',PQENTRYOBJ%PR
+    TSEDGEPTR => MINNODEPTR%TOP_FROM
+    DO WHILE (ASSOCIATED(TSEDGEPTR))
+        PRINT *, 'TS ID:',TSEDGEPTR%TS_ID,'from',TSEDGEPTR%FROM_NODE%MIN_ID,'to ', TSEDGEPTR%TO_NODE%MIN_ID
+        IF (TSEDGEPTR%TO_NODE%RED) THEN
+            PRINT *, 'TO node is red'
+            FLVLZ = SP_TREE(MINNODEPTR%MIN_ID)%CURR_DIST + TSEDGEPTR%W
+            IF (FLVLZ < SP_TREE(TSEDGEPTR%TO_NODE%MIN_ID)%CURR_DIST) THEN
+                PRINT *, 'updating current distance for TO node'
+                SP_TREE(TSEDGEPTR%TO_NODE%MIN_ID)%CURR_DIST = FLVLZ
+                SP_TREE(TSEDGEPTR%TO_NODE%MIN_ID)%PARENT_NODE => MINNODEPTR
+                !!! quack - add improved entry to priority queue
+            ENDIF
+        ENDIF
+        TSEDGEPTR => TSEDGEPTR%NEXT_FROM
+    ENDDO
+ENDDO
+IF (.NOT. ASSOCIATED(SP_TREE(LJ1)%PARENT_NODE)) THEN
+    PRINT *, 'kdistinctpaths> no shortest path to endpoint node',LJ1
+    STOP
+ENDIF
+
+NULLIFY(MINNODEPTR,TSEDGEPTR)
+PRINT *, 'Finished MARCHETTI_PROCESS_REDS()'
 
 END SUBROUTINE MARCHETTI_PROCESS_REDS
 
