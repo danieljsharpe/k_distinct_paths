@@ -45,7 +45,7 @@ END TYPE EDGE
 
 TYPE NODE
     INTEGER :: MIN_ID        ! min ID (line no. in min.data)
-    LOGICAL :: VISITED       ! used in Dijkstra routine
+    LOGICAL :: VISITED       ! used in Dijkstra routine & to keep track of entries in priority queue in Marchetti algorithm
     LOGICAL :: RED           ! whether or not node is coloured "red" in Marchetti-Spaccamella algorithm
     TYPE(EDGE), POINTER :: TOP_TO
     TYPE(EDGE), POINTER :: TOP_FROM
@@ -190,6 +190,63 @@ END SUBROUTINE DESTROY
 
 END MODULE PRIORITY_QUEUE_KDP
 
+!-------------------------------------------------------------------------------
+! Module containing subroutines for which an explicit interface is required
+!-------------------------------------------------------------------------------
+MODULE KDP_SUBS
+USE COMMONS
+USE GRAPH_KDP
+USE TREE_KDP
+IMPLICIT NONE
+CONTAINS
+
+!-------------------------------------------------------------------------------
+! subroutine to print a path and determine the rate limiting edge
+!-------------------------------------------------------------------------------
+SUBROUTINE PRINT_PATH_KDP(RLEDGEPTR,LJ2,k)
+
+INTEGER :: i, j, k, LJ2
+TYPE(EDGE), POINTER :: TSEDGEPTR, RLEDGEPTR
+CHARACTER(LEN=8) :: FMTDESC ! format descriptor
+CHARACTER(LEN=3) :: X1 ! intermediate for converting int to string using an 'internal file'
+CHARACTER(LEN=9) :: FNAME
+
+!PRINT *, 'called PRINT_PATH_KDP()'
+
+IF (ASSOCIATED(RLEDGEPTR)) NULLIFY(RLEDGEPTR)
+NULLIFY(TSEDGEPTR)
+FMTDESC = '(I3.3)'
+WRITE (X1,FMTDESC) k
+FNAME = "Epath."//TRIM(X1)
+OPEN(6,FILE=FNAME)
+
+i = LJ2 ! note a null parent node indicates no parent exists (true for the 'start' minimum only)
+j = 2
+TSEDGEPTR => SP_TREE(i)%PARENT_TS
+PRINT *, 'min:',SP_TREE(i)%MIN_ID
+WRITE(6,*) j-1, EMIN(i), SP_TREE(i)%MIN_ID
+DO WHILE (ASSOCIATED(SP_TREE(i)%PARENT_NODE))
+    IF (.NOT. ASSOCIATED(RLEDGEPTR) .OR. TSEDGEPTR%W > RLEDGEPTR%W) THEN
+        RLEDGEPTR => TSEDGEPTR
+    ENDIF
+    PRINT *, 'min:',SP_TREE(i)%PARENT_NODE%MIN_ID,'ts:',SP_TREE(i)%PARENT_TS%TS_ID,'w:',SP_TREE(i)%PARENT_TS%W, &
+             '    child?:',SP_TREE(i)%PARENT_TS%CHILD
+    ! PRINT *, '                    ',TS_EDGES(SP_TREE(i)%PARENT_TS%TS_ID)%W,TS_EDGES(SP_TREE(i)%PARENT_TS%TS_ID+NTS)%W
+    WRITE(6,*) j, ETS(SP_TREE(i)%PARENT_TS%TS_ID), SP_TREE(i)%PARENT_TS%TS_ID
+    WRITE(6,*) j+1, EMIN(SP_TREE(i)%PARENT_NODE%MIN_ID), SP_TREE(i)%PARENT_NODE%MIN_ID
+    i = SP_TREE(i)%PARENT_NODE%MIN_ID
+    j = j+2
+    TSEDGEPTR => SP_TREE(i)%PARENT_TS
+ENDDO
+PRINT *, 'rate limiting edge:'
+PRINT *, 'from:',RLEDGEPTR%FROM_NODE%MIN_ID,'to:',RLEDGEPTR%TO_NODE%MIN_ID,'W:',RLEDGEPTR%W
+NULLIFY(TSEDGEPTR)
+CLOSE(6)
+
+END SUBROUTINE PRINT_PATH_KDP
+
+END MODULE KDP_SUBS
+
 
 !-------------------------------------------------------------------------------
 ! Subroutine for finding the k shortest "distinct" paths
@@ -202,11 +259,12 @@ USE COMMONS
 USE GRAPH_KDP
 USE TREE_KDP
 USE PRIORITY_QUEUE_KDP
+USE KDP_SUBS
 IMPLICIT NONE
 EXTERNAL MAKED4
 EXTERNAL RATECONST_SETUP
 
-INTEGER :: i, j, Z, TS_ID
+INTEGER :: i, j, k, Z, TS_ID
 INTEGER :: LJ1, LJ2  ! reactant and product minimum, respectively
 DOUBLE PRECISION :: PRVAL
 TYPE(NODE) :: MINNODEOBJ
@@ -226,6 +284,10 @@ DOUBLE PRECISION :: CUT_UNDERFLOW
 PRINT *, 'kdistinctpaths> I am doing KDISTINCTPATHS, just like I said I would :)'
 PRINT *, 'finding the ', KPATHS, ' best paths'
 PRINT *, 'there are ', NMIN, ' minima and ', NTS, ' transition states'
+IF (KPATHS < 2) THEN
+    PRINT *, 'kdistinctpaths> error: KDISTINCTPATHS keyword is used to find two or more paths'
+    STOP
+ENDIF
 
 LJ1 = LOCATIONA(1)
 LJ2 = LOCATIONB(1)
@@ -254,7 +316,7 @@ PRINT *, 'kdistinctpaths> setting up rate constants'
 CALL RATECONST_SETUP(KSUM,DEADTS,NDEAD,.FALSE.,CUT_UNDERFLOW)
 PRINT *, 'kdistinctpaths> setting up adjacency matrix'
 CALL MAKED4(DMATMC,NCOL,NVAL,DEADTS,KSUM,INDEX_TS)
-PRINT *, 'Number of ~dead~ TSs: ', NDEAD
+PRINT *, 'kdistinctpaths> number of dead TSs: ', NDEAD
 
 
 !!! translate input minima and transition state arrays into the GRAPH_KDP derived type
@@ -270,6 +332,7 @@ DO i = 1, 2*NTS ! Nullify all pointers for edges (representing transition states
 ENDDO
 
 ! node IDs are equal to positions of minima in the array read from min.data
+PRINT *, 'kdistinctpaths> assinging node information to array'
 DO i = 1, NMIN
     MIN_NODES(i)%MIN_ID = 0
     MIN_NODES(i)%VISITED = .FALSE.
@@ -278,171 +341,151 @@ DO i = 1, NMIN
     MIN_NODES(i)%MIN_ID = i
 ENDDO
 
-PRINT *, 'assigning edge information'
+PRINT *, 'kdistinctpaths> assigning edge information to array'
 ! edge IDs are equal to positions of minima in the array read from ts.data
 DO i = 1, NTS
     TS_EDGES(i)%TS_ID = 0
     TS_EDGES(i+NTS)%TS_ID = 0
-    IF (DEADTS(i)) CYCLE ! ??
+    IF (DEADTS(i)) CYCLE
     TS_EDGES(i)%TS_ID = i
     TS_EDGES(i+NTS)%TS_ID = i
-    ! PRINT *, '  i = ', i
     ! assign edge weights and to/from nodes in derived data type
     IF ((PLUS(i)==LJ1) .OR. (MINUS(i)==LJ2)) THEN
-        !PRINT *, '    if1'
         TS_EDGES(i)%W = -LOG(DMATMC(i,1))
         TS_EDGES(i)%FROM_NODE => MIN_NODES(PLUS(i))
         TS_EDGES(i)%TO_NODE => MIN_NODES(MINUS(i))
     ELSEIF ((MINUS(i)==LJ1) .OR. (PLUS(i)==LJ2)) THEN
-        ! PRINT *, '    if2'
         TS_EDGES(NTS+i)%W = -LOG(DMATMC(i,2))
         TS_EDGES(NTS+i)%FROM_NODE => MIN_NODES(MINUS(i))
         TS_EDGES(NTS+i)%TO_NODE => MIN_NODES(PLUS(i))
     ElSE
-        ! PRINT *, '    if3'
         TS_EDGES(i)%W = -LOG(DMATMC(i,1))
-        ! PRINT *, 'assigned weight'
         TS_EDGES(i)%FROM_NODE => MIN_NODES(PLUS(i))
-        ! PRINT *, 'assigned from_node'
         TS_EDGES(i)%TO_NODE => MIN_NODES(MINUS(i))
-        ! PRINT *, 'assigned to_node'
 
         TS_EDGES(NTS+i)%W = -LOG(DMATMC(i,2))
         TS_EDGES(NTS+i)%FROM_NODE => MIN_NODES(MINUS(i))
         TS_EDGES(NTS+i)%TO_NODE => MIN_NODES(PLUS(i))
     ENDIF
 ENDDO
-PRINT *, 'finished assigning edge information'
 
-PRINT *, 'building GRAPH data structure'
+PRINT *, 'kdistinctpaths> building graph data structure to represent the KTN'
 DO i = 1, NMIN
     IF (NCOL(i) == 0) CYCLE ! min has no neighbours
     ! CYCLE ! quack skip all
     DO j = 1, NCOL(i) ! loop over all neighbours of min i
         IF (ASSOCIATED(TS_EDGES(INDEX_TS(j,i))%TO_NODE)) THEN
             IF (TS_EDGES(INDEX_TS(j,i))%TO_NODE%MIN_ID == i) THEN
-                !PRINT *, 'adding a TO edge 1'
                 CALL ADD_TO_EDGE(i, INDEX_TS(j,i))
             ELSEIF (TS_EDGES(INDEX_TS(j,i))%FROM_NODE%MIN_ID == i) THEN
-                !PRINT *, 'adding a FROM edge 1'
                 CALL ADD_FROM_EDGE(i, INDEX_TS(j,i))
             ELSE
-                PRINT *, 'oh dear'
+                PRINT *, 'kdistinctpaths> something went wrong'
                 STOP
             ENDIF
         ENDIF
         IF (ASSOCIATED(TS_EDGES(INDEX_TS(j,i)+NTS)%TO_NODE)) THEN
             IF (TS_EDGES(INDEX_TS(j,i)+NTS)%TO_NODE%MIN_ID == i) THEN
-               !PRINT *, 'adding a TO edge 2'
                CALL ADD_TO_EDGE(i, INDEX_TS(j,i)+NTS)
             ELSEIF (TS_EDGES(INDEX_TS(j,i) + NTS)%FROM_NODE%MIN_ID == i) THEN
-               !PRINT *, 'adding a FROM edge 2'
                CALL ADD_FROM_EDGE(i, INDEX_TS(j,i)+NTS)
             ELSE
-               PRINT *, 'oh dear'
+               PRINT *, 'kdistinctpaths> something went wrong'
                STOP
             ENDIF
         ENDIF
     ENDDO
 ENDDO
-PRINT *, 'finished building GRAPH data structure'
+PRINT *, 'kdistinctpaths> finished building graph data structure'
 
-! simple tests node data structure is correct
-PRINT *, 'ID of node 5000: ', MIN_NODES(5000)%MIN_ID, ' energy of node 5000: ', EMIN(MIN_NODES(5000)%MIN_ID)
-! simple test edge data structure is correct
-PRINT *, 'Is TS #5000 dead? ', DEADTS(5000)
-PRINT *, 'ID of TS 6000: ', TS_EDGES(6000)%TS_ID, ' energy of TS 6000: ', ETS(TS_EDGES(6000)%TS_ID), ' weight: ', &
-         TS_EDGES(6000)%W, 'from node: ', TS_EDGES(6000)%FROM_NODE%MIN_ID, &
-         ' to node: ', TS_EDGES(6000)%TO_NODE%MIN_ID
-
-!i=114101
-i=1154
-PRINT *, 'Finding all incoming nodes connected to node',i,':'
-TSEDGEPTR => MIN_NODES(i)%TOP_TO
-! PRINT *, TSEDGEPTR%TS_ID
-DO WHILE (ASSOCIATED(TSEDGEPTR))
-    PRINT *, 'TS ID: ', TSEDGEPTR%TS_ID, 'from ', TSEDGEPTR%FROM_NODE%MIN_ID, 'to ', TSEDGEPTR%TO_NODE%MIN_ID
-    TSEDGEPTR => TSEDGEPTR%NEXT_TO
-ENDDO
-NULLIFY(TSEDGEPTR)
-PRINT *, 'Finding all outgoing nodes connected to node',i,': '
-TSEDGEPTR => MIN_NODES(i)%TOP_FROM
-DO WHILE (ASSOCIATED(TSEDGEPTR))
-    PRINT *, 'TS ID: ', TSEDGEPTR%TS_ID, 'from ', TSEDGEPTR%FROM_NODE%MIN_ID, 'to ', TSEDGEPTR%TO_NODE%MIN_ID
-    TSEDGEPTR => TSEDGEPTR%NEXT_FROM
-ENDDO
-NULLIFY(TSEDGEPTR)
-!PRINT *, 'Now I am going to delete the top FROM edge from node',i,'in the GRAPH data structure: '
-!CALL DEL_FROM_EDGE(i)
-!PRINT *, 'The FROM edges for node',i,'are now:'
-!TSEDGEPTR => MIN_NODES(i)%TOP_FROM
-!DO WHILE (ASSOCIATED(TSEDGEPTR))
-!    PRINT *, 'TS ID: ', TSEDGEPTR%TS_ID, 'from ', TSEDGEPTR%FROM_NODE%MIN_ID, 'to ', TSEDGEPTR%TO_NODE%MIN_ID
-!    TSEDGEPTR => TSEDGEPTR%NEXT_FROM
-!ENDDO
-!NULLIFY(TSEDGEPTR)
-
-PRINT *, 'experimenting with the PRIORITY_QUEUE data structure'
-NULLIFY(MINNODEPTR)
-PRINT *, 'building a priority queue:'
-PRVAL = 1.0D0
-DO j = 1, 10
-    IF (.NOT. MIN_NODES(i)%MIN_ID==0) THEN
-        MINNODEPTR => MIN_NODES(i)
-        CALL KDP_PQ%ENQUEUE(PRVAL,MINNODEPTR)
-        PRVAL = PRVAL + 0.5D0
-    ENDIF
-    i = i+1
-ENDDO
-NULLIFY(MINNODEPTR)
-PRINT *, 'printing the priority queue:'
-DO WHILE (KDP_PQ%PQ_SZ>0)
-    PQENTRYOBJ = KDP_PQ%TOP()
-    MINNODEPTR => PQENTRYOBJ%PQ_NODEPTR
-    PRINT *, 'min idx: ', MINNODEPTR%MIN_ID, 'priority value: ',PQENTRYOBJ%PR
-ENDDO
-NULLIFY(MINNODEPTR)
-PRINT *, 'deallocating the priority queue object...'
-CALL KDP_PQ%DESTROY()
+IF (DEBUG) THEN
+    PRINT *, 'kdistinctpaths> running debug tests to verify implementation of data structures'
+    ! simple tests node data structure is correct
+    PRINT *, 'ID of node 5000: ', MIN_NODES(5000)%MIN_ID, ' energy of node 5000: ', EMIN(MIN_NODES(5000)%MIN_ID)
+    ! simple test edge data structure is correct
+    PRINT *, 'Is TS #5000 dead? ', DEADTS(5000)
+    PRINT *, 'ID of TS 6000: ', TS_EDGES(6000)%TS_ID, ' energy of TS 6000: ', ETS(TS_EDGES(6000)%TS_ID), ' weight: ', &
+             TS_EDGES(6000)%W, 'from node: ', TS_EDGES(6000)%FROM_NODE%MIN_ID, &
+             ' to node: ', TS_EDGES(6000)%TO_NODE%MIN_ID
+    
+    i=1154
+    PRINT *, 'Finding all incoming nodes connected to node',i,':'
+    TSEDGEPTR => MIN_NODES(i)%TOP_TO
+    ! PRINT *, TSEDGEPTR%TS_ID
+    DO WHILE (ASSOCIATED(TSEDGEPTR))
+        PRINT *, 'TS ID: ', TSEDGEPTR%TS_ID, 'from ', TSEDGEPTR%FROM_NODE%MIN_ID, 'to ', TSEDGEPTR%TO_NODE%MIN_ID
+        TSEDGEPTR => TSEDGEPTR%NEXT_TO
+    ENDDO
+    NULLIFY(TSEDGEPTR)
+    PRINT *, 'Finding all outgoing nodes connected to node',i,': '
+    TSEDGEPTR => MIN_NODES(i)%TOP_FROM
+    DO WHILE (ASSOCIATED(TSEDGEPTR))
+        PRINT *, 'TS ID: ', TSEDGEPTR%TS_ID, 'from ', TSEDGEPTR%FROM_NODE%MIN_ID, 'to ', TSEDGEPTR%TO_NODE%MIN_ID
+        TSEDGEPTR => TSEDGEPTR%NEXT_FROM
+    ENDDO
+    NULLIFY(TSEDGEPTR)
+    PRINT *, 'Now I am going to delete the top FROM edge from node',i,'in the GRAPH data structure: '
+    CALL DEL_FROM_EDGE(i)
+    PRINT *, 'The FROM edges for node',i,'are now:'
+    TSEDGEPTR => MIN_NODES(i)%TOP_FROM
+    DO WHILE (ASSOCIATED(TSEDGEPTR))
+        PRINT *, 'TS ID: ', TSEDGEPTR%TS_ID, 'from ', TSEDGEPTR%FROM_NODE%MIN_ID, 'to ', TSEDGEPTR%TO_NODE%MIN_ID
+        TSEDGEPTR => TSEDGEPTR%NEXT_FROM
+    ENDDO
+    NULLIFY(TSEDGEPTR)
+    
+    PRINT *, 'experimenting with the PRIORITY_QUEUE data structure'
+    NULLIFY(MINNODEPTR)
+    PRINT *, 'building a priority queue:'
+    PRVAL = 1.0D0
+    DO j = 1, 10
+        IF (.NOT. MIN_NODES(i)%MIN_ID==0) THEN
+            MINNODEPTR => MIN_NODES(i)
+            CALL KDP_PQ%ENQUEUE(PRVAL,MINNODEPTR)
+            PRVAL = PRVAL + 0.5D0
+        ENDIF
+        i = i+1
+    ENDDO
+    NULLIFY(MINNODEPTR)
+    PRINT *, 'printing the priority queue:'
+    DO WHILE (KDP_PQ%PQ_SZ>0)
+        PQENTRYOBJ = KDP_PQ%TOP()
+        MINNODEPTR => PQENTRYOBJ%PQ_NODEPTR
+        PRINT *, 'min idx: ', MINNODEPTR%MIN_ID, 'priority value: ',PQENTRYOBJ%PR
+    ENDDO
+    NULLIFY(MINNODEPTR)
+    PRINT *, 'deallocating the priority queue object...'
+    CALL KDP_PQ%DESTROY()
+ENDIF
 
 !!! Now the algorithm of Frigioni, Marchetti-Spaccamella & Nanni
 ! First find the initial shortest path tree by Dijkstra's algorithm
 CALL DIJKSTRA_KDP(LJ1)
 
-! print the shortest path tree and determine the "rate-limiting edge"
-! note a null parent node indicates no parent exists (true for the 'start' minimum only)
-PRINT *, 'printing the shortest path tree'
-i = LJ2
-TSEDGEPTR => SP_TREE(i)%PARENT_TS
 NULLIFY(RLEDGEPTR)
-PRINT *, 'min:',SP_TREE(i)%MIN_ID
-DO WHILE (ASSOCIATED(SP_TREE(i)%PARENT_NODE))
-    IF (.NOT. ASSOCIATED(RLEDGEPTR) .OR. TSEDGEPTR%W > RLEDGEPTR%W) THEN
-        RLEDGEPTR => TSEDGEPTR
-    ENDIF
-    PRINT *, 'min:',SP_TREE(i)%PARENT_NODE%MIN_ID,'ts:',SP_TREE(i)%PARENT_TS%TS_ID,'w:',SP_TREE(i)%PARENT_TS%W, &
-             '    child?:',SP_TREE(i)%PARENT_TS%CHILD
-    ! PRINT *, '                    ',TS_EDGES(SP_TREE(i)%PARENT_TS%TS_ID)%W,TS_EDGES(SP_TREE(i)%PARENT_TS%TS_ID+NTS)%W
-    i = SP_TREE(i)%PARENT_NODE%MIN_ID
-    TSEDGEPTR => SP_TREE(i)%PARENT_TS
+CALL PRINT_PATH_KDP(RLEDGEPTR,LJ2,1)
+
+DO k = 2, KPATHS
+    ! block the rate-limiting edge in both directions
+    TS_EDGES(RLEDGEPTR%TS_ID)%W = HUGE(0.0D0)
+    TS_EDGES(RLEDGEPTR%TS_ID+NTS)%W = HUGE(0.0D0)
+    ! queue the owner node of the rate-limiting edge
+    CALL KDP_PQ%ENQUEUE(SP_TREE(RLEDGEPTR%TO_NODE%MIN_ID)%CURR_DIST,RLEDGEPTR%TO_NODE)
+    NULLIFY(RLEDGEPTR)
+
+    ! Now find nodes in the shortest path tree where we need to check for alternative connections
+    CALL MARCHETTI_COLOURING()
+    CALL KDP_PQ%DESTROY()
+    CALL MARCHETTI_PROCESS_REDS(LJ2)
+    CALL KDP_PQ%DESTROY()
+
+    CALL PRINT_PATH_KDP(RLEDGEPTR,LJ2,k)
+
+    DO i = 1, NMIN
+        MIN_NODES(i)%RED = .FALSE.
+    ENDDO
 ENDDO
-PRINT *, 'rate limiting edge:'
-PRINT *, 'from:',RLEDGEPTR%FROM_NODE%MIN_ID,'to:',RLEDGEPTR%TO_NODE%MIN_ID,'W:',RLEDGEPTR%W
-! block the rate-limiting edge in both directions
-TS_EDGES(RLEDGEPTR%TS_ID)%W = HUGE(0.0D0)
-TS_EDGES(RLEDGEPTR%TS_ID+NTS)%W = HUGE(0.0D0)
-! queue the owner node of the rate-limiting edge
-CALL KDP_PQ%ENQUEUE(SP_TREE(RLEDGEPTR%TO_NODE%MIN_ID)%CURR_DIST,RLEDGEPTR%TO_NODE)
 NULLIFY(RLEDGEPTR)
-
-! Now find nodes in the shortest path tree where we need to check for alternative connections
-CALL MARCHETTI_COLOURING()
-
-CALL KDP_PQ%DESTROY()
-
-CALL MARCHETTI_PROCESS_REDS(LJ1)
-
-CALL KDP_PQ%DESTROY()
 
 !!! cleanup
 ! nullifying all pointers in derived data types
@@ -463,6 +506,7 @@ PRINT *, 'deallocating SP_TREE?', ALLOCATED(SP_TREE)
 IF (ALLOCATED(SP_TREE)) DEALLOCATE(SP_TREE)
 
 END SUBROUTINE KDISTINCTPATHS
+
 
 !-------------------------------------------------------------------------------
 ! Subroutine for first step of Marchetti-Spaccamella algorithm:
@@ -489,13 +533,6 @@ NULLIFY(MINNODEPTR,TSEDGEPTR)
 !ALLOCATE(DYNLLRED)
 NULLIFY(HEADLLRED,DYNLLRED)
 !NULLIFY(HEADLLRED%NODE_INLIST,HEADLLRED%NEXTLLENTRY,DYNLLRED%NODE_INLIST,DYNLLRED%NEXTLLENTRY)
-
-! check number of child nodes
-n = 0
-DO i = 1,2*NTS
-    IF (TS_EDGES(i)%CHILD) n = n+1
-ENDDO
-PRINT *, 'there are',n,'edges in the shortest path tree'
 
 n = 0
 DO WHILE (KDP_PQ%PQ_SZ>0)
@@ -586,7 +623,7 @@ END SUBROUTINE MARCHETTI_COLOURING
 ! Processes vertices that are coloured "red" to find best alternative parents and
 ! make updates to the shortest path tree accordingly
 !-------------------------------------------------------------------------------
-SUBROUTINE MARCHETTI_PROCESS_REDS(LJ1)
+SUBROUTINE MARCHETTI_PROCESS_REDS(LJ2)
 
 USE COMMONS
 USE GRAPH_KDP
@@ -594,12 +631,12 @@ USE TREE_KDP
 USE PRIORITY_QUEUE_KDP
 IMPLICIT NONE
 
-INTEGER :: LJ1, n
+INTEGER :: LJ2, n
 LOGICAL :: NONRED_NBR
 DOUBLE PRECISION :: FLVLZ, FLVLZBEST, EDGECOST
 TYPE(PQ_ENTRY) :: PQENTRYOBJ
 TYPE(NODE), POINTER :: MINNODEPTR, BESTNONREDNBR
-TYPE(EDGE), POINTER :: TSEDGEPTR
+TYPE(EDGE), POINTER :: TSEDGEPTR, BESTNBREDGE
 
 PRINT *, 'Called MARCHETTI_PROCESS_REDS()'
 
@@ -607,25 +644,25 @@ n = 0
 NULLIFY(MINNODEPTR,TSEDGEPTR)
 DYNLLRED => HEADLLRED
 DO WHILE (ASSOCIATED(DYNLLRED%NEXTLLENTRY))
-    NULLIFY(BESTNONREDNBR)
+    NULLIFY(BESTNONREDNBR,BESTNBREDGE)
     FLVLZBEST = HUGE(0.D0)
     NONRED_NBR = .FALSE.
     MINNODEPTR => DYNLLRED%NODE_INLIST
-    PRINT *, ''
-    PRINT *, 'set MINNODEPTR to min',MINNODEPTR%MIN_ID
+    !PRINT *, ''
+    !PRINT *, 'set MINNODEPTR to min',MINNODEPTR%MIN_ID
     ! loop over neighbours of the current red node
     TSEDGEPTR => MINNODEPTR%TOP_FROM
-    PRINT *, 'looping over neighbours of node',MINNODEPTR%MIN_ID
+    !PRINT *, 'looping over neighbours of node',MINNODEPTR%MIN_ID
     DO WHILE (ASSOCIATED(TSEDGEPTR))
-        PRINT *, 'TS ID:',TSEDGEPTR%TS_ID,'from',TSEDGEPTR%FROM_NODE%MIN_ID,'to ', TSEDGEPTR%TO_NODE%MIN_ID
-
+        !PRINT *, 'TS ID:',TSEDGEPTR%TS_ID,'from',TSEDGEPTR%FROM_NODE%MIN_ID,'to ', TSEDGEPTR%TO_NODE%MIN_ID
         IF (.NOT. TSEDGEPTR%TO_NODE%RED) THEN
-            PRINT *, 'Found a nonred neighbour'
+            !PRINT *, 'Found a nonred neighbour'
             NONRED_NBR = .TRUE.
             FLVLZ = SP_TREE(TSEDGEPTR%TO_NODE%MIN_ID)%CURR_DIST + TSEDGEPTR%W
             IF (.NOT. ASSOCIATED(BESTNONREDNBR) .OR. FLVLZ < FLVLZBEST) THEN
-                PRINT *, 'This nonred neighbour is the new best nonred neighbour'
+                !PRINT *, 'This nonred neighbour is the new best nonred neighbour'
                 BESTNONREDNBR => TSEDGEPTR%TO_NODE
+                BESTNBREDGE => TSEDGEPTR
                 EDGECOST = TSEDGEPTR%W
                 FLVLZBEST = FLVLZ
             ENDIF
@@ -633,52 +670,63 @@ DO WHILE (ASSOCIATED(DYNLLRED%NEXTLLENTRY))
         TSEDGEPTR => TSEDGEPTR%NEXT_FROM
     ENDDO
     IF (.NOT. NONRED_NBR) THEN ! disclude this node from the shortest path tree
-        PRINT *, 'this node has no nonred neighbour'
+        !PRINT *, 'this node has no nonred neighbour'
         SP_TREE(MINNODEPTR%MIN_ID)%CURR_DIST = HUGE(0.D0)
         NULLIFY(SP_TREE(MINNODEPTR%MIN_ID)%PARENT_NODE)
     ELSE
-        PRINT *, 'the best nonred neighbour of this node is',BESTNONREDNBR%MIN_ID
+        !PRINT *, 'the best nonred neighbour of this node is',BESTNONREDNBR%MIN_ID
         SP_TREE(MINNODEPTR%MIN_ID)%CURR_DIST = SP_TREE(BESTNONREDNBR%MIN_ID)%CURR_DIST + EDGECOST
         SP_TREE(MINNODEPTR%MIN_ID)%PARENT_NODE => BESTNONREDNBR
+        SP_TREE(MINNODEPTR%MIN_ID)%PARENT_TS%CHILD = .FALSE. ! need to give old CHILD edge .FALSE. label
+        BESTNBREDGE%CHILD = .TRUE.
+        SP_TREE(MINNODEPTR%MIN_ID)%PARENT_TS => BESTNBREDGE
         CALL KDP_PQ%ENQUEUE(SP_TREE(MINNODEPTR%MIN_ID)%CURR_DIST,MINNODEPTR)
+        MINNODEPTR%VISITED = .TRUE. ! flag indicates node has been queued
     ENDIF    
-
-    ! loop over nodes in priority queue
 
     ! go to next node in linked list
     n = n+1
-    PRINT *, 'n is:', n
+    !PRINT *, 'n is:', n
     DYNLLRED => DYNLLRED%NEXTLLENTRY
-    PRINT *, 'deallocating HEADLLRED'
+    !PRINT *, 'deallocating HEADLLRED'
     DEALLOCATE(HEADLLRED)
-    PRINT *, 'setting HEADLLRED to DYNLLRED'
+    !PRINT *, 'setting HEADLLRED to DYNLLRED'
     HEADLLRED => DYNLLRED
 ENDDO
 
-NULLIFY(MINNODEPTR,TSEDGEPTR)
-PRINT *, 'printing the priority queue...'
+NULLIFY(MINNODEPTR,TSEDGEPTR,BESTNONREDNBR,BESTNBREDGE)
+!PRINT *, 'last stage of Marchetti-Spaccamella algorithm...'
 DO WHILE (KDP_PQ%PQ_SZ>0)
     PQENTRYOBJ = KDP_PQ%TOP()
     MINNODEPTR => PQENTRYOBJ%PQ_NODEPTR
-    PRINT *, 'min idx: ', MINNODEPTR%MIN_ID, 'priority value: ',PQENTRYOBJ%PR
+    IF (.NOT. MINNODEPTR%VISITED) CYCLE ! found "out-of-date" entry in priority queue
+    MINNODEPTR%VISITED = .FALSE. ! flag indicates node has been dequeued
+    !PRINT *, ''
+    !PRINT *, 'min idx: ', MINNODEPTR%MIN_ID, 'priority value: ',PQENTRYOBJ%PR
     TSEDGEPTR => MINNODEPTR%TOP_FROM
     DO WHILE (ASSOCIATED(TSEDGEPTR))
-        PRINT *, 'TS ID:',TSEDGEPTR%TS_ID,'from',TSEDGEPTR%FROM_NODE%MIN_ID,'to ', TSEDGEPTR%TO_NODE%MIN_ID
+        !PRINT *, 'TS ID:',TSEDGEPTR%TS_ID,'from',TSEDGEPTR%FROM_NODE%MIN_ID,'to ', TSEDGEPTR%TO_NODE%MIN_ID
         IF (TSEDGEPTR%TO_NODE%RED) THEN
-            PRINT *, 'TO node is red'
+            !PRINT *, 'TO node is red'
             FLVLZ = SP_TREE(MINNODEPTR%MIN_ID)%CURR_DIST + TSEDGEPTR%W
             IF (FLVLZ < SP_TREE(TSEDGEPTR%TO_NODE%MIN_ID)%CURR_DIST) THEN
-                PRINT *, 'updating current distance for TO node'
+                !PRINT *, 'updating current distance for TO node'
                 SP_TREE(TSEDGEPTR%TO_NODE%MIN_ID)%CURR_DIST = FLVLZ
                 SP_TREE(TSEDGEPTR%TO_NODE%MIN_ID)%PARENT_NODE => MINNODEPTR
-                !!! quack - add improved entry to priority queue
+                SP_TREE(TSEDGEPTR%TO_NODE%MIN_ID)%PARENT_TS%CHILD = .FALSE. ! old edge in sp tree
+                TSEDGEPTR%CHILD = .TRUE.
+                SP_TREE(TSEDGEPTR%TO_NODE%MIN_ID)%PARENT_TS => TSEDGEPTR
+                ! add improved entry to priority queue
+                CALL KDP_PQ%ENQUEUE(SP_TREE(TSEDGEPTR%TO_NODE%MIN_ID)%CURR_DIST,TSEDGEPTR%TO_NODE)
+                TSEDGEPTR%TO_NODE%VISITED = .TRUE.
             ENDIF
         ENDIF
         TSEDGEPTR => TSEDGEPTR%NEXT_FROM
     ENDDO
 ENDDO
-IF (.NOT. ASSOCIATED(SP_TREE(LJ1)%PARENT_NODE)) THEN
-    PRINT *, 'kdistinctpaths> no shortest path to endpoint node',LJ1
+
+IF (.NOT. ASSOCIATED(SP_TREE(LJ2)%PARENT_NODE)) THEN
+    PRINT *, 'kdistinctpaths> no existing path to endpoint node',LJ2
     STOP
 ENDIF
 
@@ -756,6 +804,10 @@ DO i = 1, NMIN ! loop over all minima
             !PRINT *, 'found new best n',n,CURR_MINDIST,'j is',j
         ENDIF
     ENDDO
+ENDDO
+
+DO i = 1, NMIN
+    MIN_NODES(i)%VISITED = .FALSE.
 ENDDO
 
 NULLIFY(TSEDGEPTR)
