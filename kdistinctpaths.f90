@@ -37,6 +37,7 @@ TYPE EDGE
     INTEGER :: TS_ID         ! TS ID (line no. in ts.data)
     DOUBLE PRECISION :: W    ! edge weight
     LOGICAL :: CHILD         ! this edge is included in the shortest path tree
+    LOGICAL :: INFASTESTALL  ! TS is found in a fastest path, is to be printed to ts.data.fastest.all
     TYPE(NODE), POINTER :: TO_NODE
     TYPE(NODE), POINTER :: FROM_NODE
     TYPE(EDGE), POINTER :: NEXT_TO
@@ -47,6 +48,7 @@ TYPE NODE
     INTEGER :: MIN_ID        ! min ID (line no. in min.data)
     LOGICAL :: VISITED       ! used in Dijkstra routine & to keep track of entries in priority queue in Marchetti algorithm
     LOGICAL :: RED           ! whether or not node is coloured "red" in Marchetti-Spaccamella algorithm
+    LOGICAL :: INFASTESTALL  ! min is found in a fastest path, is to be printed to min.data.fastest.all
     TYPE(EDGE), POINTER :: TOP_TO
     TYPE(EDGE), POINTER :: TOP_FROM
 END TYPE NODE
@@ -206,6 +208,7 @@ CONTAINS
 SUBROUTINE PRINT_PATH_KDP(RLEDGEPTR,LJ2,k)
 
 INTEGER :: i, j, k, LJ2
+DOUBLE PRECISION :: SUMW
 TYPE(EDGE), POINTER :: TSEDGEPTR, RLEDGEPTR
 CHARACTER(LEN=8) :: FMTDESC ! format descriptor
 CHARACTER(LEN=3) :: X1 ! intermediate for converting int to string using an 'internal file'
@@ -220,12 +223,16 @@ WRITE (X1,FMTDESC) k
 FNAME = "Epath."//TRIM(X1)
 OPEN(6,FILE=FNAME)
 
+SUMW = 0.0D0
 i = LJ2 ! note a null parent node indicates no parent exists (true for the 'start' minimum only)
 j = 2
 TSEDGEPTR => SP_TREE(i)%PARENT_TS
 PRINT *, 'min:',SP_TREE(i)%MIN_ID
 WRITE(6,*) j-1, EMIN(i), SP_TREE(i)%MIN_ID
 DO WHILE (ASSOCIATED(SP_TREE(i)%PARENT_NODE))
+    TSEDGEPTR%INFASTESTALL = .TRUE.
+    SP_TREE(i)%PARENT_NODE%INFASTESTALL = .TRUE.
+    SUMW = SUMW + TSEDGEPTR%W
     IF (.NOT. ASSOCIATED(RLEDGEPTR) .OR. TSEDGEPTR%W > RLEDGEPTR%W) THEN
         RLEDGEPTR => TSEDGEPTR
     ENDIF
@@ -242,6 +249,7 @@ PRINT *, 'rate limiting edge:'
 PRINT *, 'from:',RLEDGEPTR%FROM_NODE%MIN_ID,'to:',RLEDGEPTR%TO_NODE%MIN_ID,'W:',RLEDGEPTR%W
 NULLIFY(TSEDGEPTR)
 CLOSE(6)
+PRINT *, 'sum of weights:', SUMW, 'exp of sum of weights:', EXP(SUMW)
 
 END SUBROUTINE PRINT_PATH_KDP
 
@@ -329,6 +337,7 @@ ENDDO
 DO i = 1, 2*NTS ! Nullify all pointers for edges (representing transition states) (NB bidirectional)
     NULLIFY(TS_EDGES(i)%FROM_NODE,TS_EDGES(i)%TO_NODE,TS_EDGES(i)%NEXT_TO,TS_EDGES(i)%NEXT_FROM)
     TS_EDGES(i)%CHILD = .FALSE.
+    TS_EDGES(i)%INFASTESTALL = .FALSE.
 ENDDO
 
 ! node IDs are equal to positions of minima in the array read from min.data
@@ -337,6 +346,7 @@ DO i = 1, NMIN
     MIN_NODES(i)%MIN_ID = 0
     MIN_NODES(i)%VISITED = .FALSE.
     MIN_NODES(i)%RED = .FALSE.
+    MIN_NODES(i)%INFASTESTALL = .FALSE.
     IF (NCOL(i)==0) CYCLE ! min has no neighbours - MIN_ID = 0 is therefore used to signal an invalid node
     MIN_NODES(i)%MIN_ID = i
 ENDDO
@@ -462,6 +472,7 @@ ENDIF
 ! First find the initial shortest path tree by Dijkstra's algorithm
 CALL DIJKSTRA_KDP(LJ1)
 
+MIN_NODES(LJ2)%INFASTESTALL = .TRUE.
 NULLIFY(RLEDGEPTR)
 CALL PRINT_PATH_KDP(RLEDGEPTR,LJ2,1)
 
@@ -780,7 +791,6 @@ DO i = 1, NMIN ! loop over all minima
             ENDIF
             SP_TREE(TSEDGEPTR%TO_NODE%MIN_ID)%PARENT_TS => TSEDGEPTR ! FROM n (parent) TO child ??? IS CORRECT
             TSEDGEPTR%CHILD = .TRUE. ! edge is included in shortest path tree
-
             ! use TS_EDGES to access weight in opposite direcn
             !SP_TREE(TSEDGEPTR%TO_NODE%MIN_ID)%PARENT_TS_2 => TS_EDGES(TSEDGEPTR+NTS)
             ! weight TO child FROM parent
