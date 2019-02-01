@@ -7,10 +7,16 @@ Stage 2: Dijkstra algorithm to find fastest path
 Stage 3: iteratively block edge corresponding to rate-limiting step and use Marchetti-Spaccamela algorithm to find
          k-1 next-"fastest" paths
 Output: k distinct (low-energy) pathways on the KTN
+
+Usage:
+k_distinct_paths.py mindataf tsdataf
+Set options as desired in K_Distinct_Paths.__init__() function
+
 Daniel J. Sharpe (djs244)
 Jul 2018
 '''
 
+import sys
 import numpy as np
 import heapq
 import read_mindata
@@ -21,15 +27,16 @@ class K_Distinct_Paths(object):
 
     def __init__(self):
         ### PARAMS - update as desired
-        self.k = 10           # no. of paths to find
+        self.k = 15           # no. of paths to find
         self.M = float("inf") # a large number for effective blocking of edges
         self.T = 298.         # temperature / K (used to calculate inverse Boltzmann weights)
-        self.s = 1            # start node (=1 for example min.data file)
-        self.t = 3345         # end node (=3345 for example min.data file, =17 for toy problem, =2 for min.data.removed)
-        self.costfunc = "noe_ts"    # choose a function for calculating the edge weights based on TS energies. Options:
+        self.s = 41           # start node (=1 for example min.data file)
+        self.t = 4298         # end node (=3345 for example min.data file, =17 for toy problem, =2 for min.data.removed)
+        self.costfunc = "fromfile"  # choose a function for calculating the edge weights based on TS energies. Options:
                                     # noe_ts: Noe's scheme based on inverse Boltzmann weighting of TS energies
                                     # noe_b: Noe's scheme based on inverse Boltzmann weighting of "edge barriers"
                                     # evans: Evans' scheme based on a log-weighted adjacency matrix
+                                    # fromfile: read a file "kdp_tsedges.dat" dumped by the PATHSAMPLE program
         self.Natoms = 138           # only needed if costfunc is "wales"
         self.write_epath = True     # write Epath.<PATH> files Y/N
         self.write_mdf = True       # write min.data.fastest.<PATH> files Y/N
@@ -251,19 +258,24 @@ class K_Distinct_Paths(object):
 
     def build_graph(self, min_energies, ts_energies, ts_conns, min_frqs=None, ts_frqs=None):
         construct_graph1 = K_Distinct_Paths.Construct_Graph()
+        weights_ps = None
         if self.costfunc == "wales":
             if min_frqs is None or ts_frqs is None: quit("Must provide frqs for this energy function")
+        elif self.costfunc == "fromfile":
+            weights_ps = read_mindata.read_psdump()
         for i in range(1,np.shape(min_energies)[0]+1): construct_graph1.add_vertex(i)
         for i in range(1,np.shape(ts_energies)[0]+1):
             # need to account for if transition state does not connect two different minima
             if ts_conns[i-1,0]==ts_conns[i-1,1]: continue
-            if min_frqs is None:
+            if min_frqs is None and weights_ps is None:
                 ts_cost1, ts_cost2 = self.calc_edge_costs(ts_energies[i-1],min_energies[ts_conns[i-1,0]-1], \
                                          min_energies[ts_conns[i-1,1]-1])
-            else:
+            elif min_frqs is not None:
                 ts_cost1, ts_cost2 = self.calc_edge_costs(ts_energies[i-1],min_energies[ts_conns[i-1,0]-1], \
                                          min_energies[ts_conns[i-1,1]-1],min_frqs[ts_conns[i-1,0]-1], \
                                          min_frqs[ts_conns[i-1,1]-1],ts_frqs[i-1],ts_conns[i-1,0],ts_conns[i-1,1])
+            elif weights_ps is not None:
+                ts_cost1, ts_cost2 = weights_ps[i-1,0], weights_ps[i-1,1]
             construct_graph1.add_edge(ts_conns[i-1,0],ts_conns[i-1,1],ts_cost1,i)
             construct_graph1.add_edge(ts_conns[i-1,1],ts_conns[i-1,0],ts_cost2,i) # "bidirected" adjacency list
         return construct_graph1.G
@@ -317,9 +329,14 @@ class K_Distinct_Paths(object):
 
 if __name__ == "__main__":
 #    '''
-    min_energies, ts_energies, ts_conns, min_frqs, ts_frqs = read_mindata.get_data(read_frqs=True)
+    mindataf, tsdataf = sys.argv[1], sys.argv[2]
     k_distinct_paths1 = K_Distinct_Paths()
-    G = k_distinct_paths1.build_graph(min_energies, ts_energies, ts_conns, min_frqs, ts_frqs)
+    if k_distinct_paths1.costfunc == "wales": # read frqs
+        min_energies, ts_energies, ts_conns, min_frqs, ts_frqs = read_mindata.get_data(mindataf,tsdataf,read_frqs=True)
+        G = k_distinct_paths1.build_graph(min_energies, ts_energies, ts_conns, min_frqs, ts_frqs)
+    else: # don't read frqs
+        min_energies, ts_energies, ts_conns = read_mindata.get_data(mindataf,tsdataf,read_frqs=False)
+        G = k_distinct_paths1.build_graph(min_energies, ts_energies, ts_conns)
     ## WARNING - THIS MAY CAUSE A CRASH
     k_distinct_paths1.dijkstra_ktn(G, min_energies, ts_energies)
     '''

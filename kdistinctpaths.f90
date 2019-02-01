@@ -379,6 +379,16 @@ DO i = 1, NTS
     ENDIF
 ENDDO
 
+IF (KDPDUMPEDGEST) THEN ! dump the edge weights to a file kdp_tsedges.dat to be read by Python script
+    OPEN(7,FILE="kdp_tsedges.dat")
+    DO i = 1, NTS
+        WRITE(7,*) TS_EDGES(i)%W, TS_EDGES(i+NTS)%W ! NB zero weights indicate "dead" TS
+    ENDDO
+    CLOSE(7)
+    PRINT *, 'kdistinctpaths> finished printing edge weights to file as requested, stopping'
+    STOP
+ENDIF
+
 PRINT *, 'kdistinctpaths> building graph data structure to represent the KTN'
 DO i = 1, NMIN
     IF (NCOL(i) == 0) CYCLE ! min has no neighbours

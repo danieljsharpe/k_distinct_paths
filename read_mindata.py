@@ -19,25 +19,37 @@ def read_data(fhandle,min_or_ts,read_frqs):
         if read_frqs: frqs.append(float(line[1]))
         if min_or_ts == "TS":
             connections.append((int(line[3]),int(line[4])))
-    if min_or_ts == "MIN" and not frqs:
+    if min_or_ts == "MIN" and not read_frqs:
         return np.array(energies,dtype=float)
-    elif min_or_ts == "MIN" and frqs:
+    elif min_or_ts == "MIN" and read_frqs:
         return np.array(energies,dtype=float), np.array(frqs,dtype=float)
-    elif min_or_ts == "TS" and not frqs:
+    elif min_or_ts == "TS" and not read_frqs:
         return np.array(energies,dtype=float), np.array(connections,dtype=int)
-    elif min_or_ts == "TS" and frqs:
+    elif min_or_ts == "TS" and read_frqs:
         return np.array(energies,dtype=float), np.array(connections,dtype=int), \
                np.array(frqs,dtype=float)
 
-def get_data(read_frqs=False):
-    with open("min.data.regrouped","r") as md_f:
+def get_data(mindataf,tsdataf,read_frqs=False):
+    with open(mindataf,"r") as md_f:
         if not read_frqs: min_energies = read_data(md_f,"MIN",read_frqs)
         else: min_energies, min_frqs = read_data(md_f,"MIN",read_frqs)
-    with open("ts.data.regrouped","r") as tsd_f:
+    with open(tsdataf,"r") as tsd_f:
         if not read_frqs: ts_energies, ts_conns = read_data(tsd_f,"TS",read_frqs)
         else: ts_energies, ts_conns, ts_frqs = read_data(tsd_f,"TS",read_frqs)
     if not read_frqs: return min_energies, ts_energies, ts_conns
     else: return min_energies, ts_energies, ts_conns, min_frqs, ts_frqs
+
+''' read a file "kdp_tsedges.dat" dumped by PATHSAMPLE, in the format:
+    "fwd_weight, bwd_weight", where the line no. indicates the TS ID (line in ts.data file) and
+    where fwd_weight corresponds to the weight for the transition between minima:
+    ts_conns[i-1,0] -> ts_conns[i-1,1] for TS ID i '''
+def read_psdump():
+    weights_ps = []
+    with open("kdp_tsedges.dat","r") as psw_f:
+        for line in psw_f:
+            line = line.split()
+            weights_ps.append([float(line[0]),float(line[1])])
+    return np.array(weights_ps,dtype=float)
 
 def write_mindatafastest(path, path_no):
     idcs_on_path = sorted([step[0] for step in path])
