@@ -9,7 +9,7 @@ Stage 3: iteratively block edge corresponding to rate-limiting step and use Marc
 Output: k distinct (low-energy) pathways on the KTN
 
 Usage:
-k_distinct_paths.py mindataf tsdataf
+python k_distinct_paths.py mindataf tsdataf
 Set options as desired in K_Distinct_Paths.__init__() function
 
 Daniel J. Sharpe (djs244)
@@ -265,8 +265,19 @@ class K_Distinct_Paths(object):
             weights_ps = read_mindata.read_psdump()
         for i in range(1,np.shape(min_energies)[0]+1): construct_graph1.add_vertex(i)
         for i in range(1,np.shape(ts_energies)[0]+1):
-            # need to account for if transition state does not connect two different minima
+            # need to account for if transition state does not connect two different minima ("dead" TSs)
             if ts_conns[i-1,0]==ts_conns[i-1,1]: continue
+            # account for more than one TS connecting a pair of minima - only interested in lowest-energy TS
+            try:
+                old_ts_id = construct_graph1.G[ts_conns[i-1,0]][ts_conns[i-1,1]][1]
+                if ts_energies[i-1] <= ts_energies[old_ts_id-1]: # disregard old TS, proceed to add this TS
+                    construct_graph1.del_edge(ts_conns[i-1,0],ts_conns[i-1,1])
+                    construct_graph1.del_edge(ts_conns[i-1,1],ts_conns[i-1,0])
+                else: # disregard this TS, keep old TS
+                    continue
+            except KeyError: # no connection exists for these minima yet
+                #print "excepting KeyError; TS:", i
+                pass
             if min_frqs is None and weights_ps is None:
                 ts_cost1, ts_cost2 = self.calc_edge_costs(ts_energies[i-1],min_energies[ts_conns[i-1,0]-1], \
                                          min_energies[ts_conns[i-1,1]-1])
@@ -291,6 +302,9 @@ class K_Distinct_Paths(object):
         def add_edge(self, v1, v2, e_cost, label=None):
             if label==None: self.G[v1][v2] = e_cost
             else: self.G[v1][v2] = [e_cost, label]
+
+        def del_edge(self, v1, v2):
+            del self.G[v1][v2]
 
     class Priority_Queue(object):
 
