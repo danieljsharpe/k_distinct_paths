@@ -23,26 +23,28 @@ Feb 2019
 #include <fstream>
 #include <string>
 #include <utility>
+#include <math.h>
+#include <limits>
 #include <boost/graph/adjacency_list.hpp>
 #include <boost/graph/graph_traits.hpp>
-#include <boost/graph/one_bit_color_map.hpp> // quack
 #include <boost/property_map/property_map.hpp>
 #include <boost/graph/stoer_wagner_min_cut.hpp>
 #include <boost/typeof/typeof.hpp>
 
+#define k_B 0.0019872036L // Boltzmann constant / kcal K^{-1} mol^{-1}
+#define T 298.0L // temperature / K
+
 using namespace std;
 
 typedef boost::adjacency_list<boost::vecS,boost::vecS,boost::undirectedS, \
-            boost::no_property,boost::property<boost::edge_weight_t,double>> UndirectedGraph;
+            boost::no_property,boost::property<boost::edge_weight_t,long double>> UndirectedGraph;
 typedef boost::graph_traits<UndirectedGraph>::vertex_descriptor vertex_descriptor;
 typedef boost::property_map<UndirectedGraph,boost::edge_weight_t>::type weight_map_type;
 typedef boost::property_traits<weight_map_type>::value_type weight_type;
 std::map<UndirectedGraph::vertex_descriptor,bool> parities_tmp;
 
 //typedef pair<double *,int **> ts_info;
-typedef pair<double *, int (*)[2]> ts_info;
-
-
+typedef pair<long double *, int (*)[2]> ts_info;
 
 
 struct edge_type {
@@ -50,24 +52,25 @@ struct edge_type {
     unsigned int second;
 };
 
-/* based on the parity map, find edges which belong to the rate-limiting cut */
+/* based on the parity map, find edges which belong to the rate-limiting cut, and sort these
+   edges in order of increasing energy and print them to file "rate_lim_cut.dat" */
 void find_cut_edges () {
 
 }
 
 // need to pass ts_ens by *reference* so that it gets modified
 ts_info read_ts_data(const int nmin, const int nts, string tsdataf, \
-                     double *ts_ens) {
+                     long double *ts_ens) {
 
     string line;
-    string firstcol, secondcol, thirdcol, fourthcol;
+    string firstcol, secondcol, thirdcol, fourthcol, fifthcol, x, y, z;
     int ndead_ts = 0;
-    double lowest_ts_en;
+    long double lowest_ts_en = std::numeric_limits<long double>::infinity();
 
     //double ts_wts[nts] = {1.,2.,3.};
     //double *ts_wts_ptr = &ts_wts[0];
 
-    double *ts_wts = new double[nts];
+    long double *ts_wts = new long double[nts];
     //ts_wts[0] = 1.; ts_wts[1] = 2.; ts_wts[2] = 3.;
     /*
     int **ts_conns = new int*[nts];
@@ -85,13 +88,17 @@ ts_info read_ts_data(const int nmin, const int nts, string tsdataf, \
     ifstream infile(tsdataf);
     infile.clear();
     infile.seekg(0,infile.beg);
-    while (infile >> firstcol >> secondcol >> thirdcol >> fourthcol) {
-        ts_ens[i] = stod(firstcol);
-        ts_wts[i] = stod(firstcol);
-        ts_conns[i][0] = stod(thirdcol); ts_conns[i][1] = stod(fourthcol);
+    cout << "beginning reading ts.data file..." << endl;
+    while (infile >> firstcol >> secondcol >> thirdcol >> fourthcol >> fifthcol >> x >> y >> z) {
+        ts_ens[i] = stold(firstcol);
+        ts_conns[i][0] = stoi(fourthcol)-1; ts_conns[i][1] = stoi(fifthcol)-1;
         if (ts_conns[i][0] == ts_conns[i][1]) {} // dead TS!
+        if (ts_ens[i] < lowest_ts_en) { lowest_ts_en = ts_ens[i]; }
         i++;
     }
+    for (int i=0;i<nts;i++) { // NB energies are read in as kcal mol^-1 from ts.data
+        ts_wts[i] = exp(-(ts_ens[i]-lowest_ts_en)/(k_B*T)); }
+        //ts_wts[i] = ts_ens[i]-lowest_ts_en; } // dummy (test) quack
 
     return make_pair(ts_wts, ts_conns);
 }
@@ -103,21 +110,21 @@ int main(int argc, char *argv[]) {
     const int nts = stoi(argv[2]);
     string tsdataf = argv[3];
 
-    double *ts_ens = new double[nts];
+    long double *ts_ens = new long double[nts];
 
     ts_info ts_info1 = read_ts_data(nmin,nts,tsdataf,ts_ens);
 
-    double *ts_wts_ptr = ts_info1.first;
+    long double *ts_wts_ptr = ts_info1.first;
     //int **ts_conns_ptr = ts_info1.second;
     int (*ts_conns_ptr)[2] = ts_info1.second;
-
+/*
     for (int i=0;i<nts;i++) {
-        cout << i << "  " << *(ts_wts_ptr+i) << endl;
-    }
+        cout << i << "  " << *(ts_wts_ptr+i) << endl; }
     for (int i=0;i<nts;i++) {
-        cout << i << "  " << ts_conns_ptr[i][0] << "  " << ts_conns_ptr[i][1] << endl;
-    }
-
+        cout << i << "  " << ts_ens[i] << endl; }
+    for (int i=0;i<nts;i++) {
+        cout << i << "  " << ts_conns_ptr[i][0] << "  " << ts_conns_ptr[i][1] << endl; }
+*/
     // construct the boost graph representing the kinetic transition network
     weight_type *ktn_wts = ts_wts_ptr;
     edge_type ktn_edges[nts];
@@ -125,29 +132,45 @@ int main(int argc, char *argv[]) {
         ktn_edges[i].first = ts_conns_ptr[i][0]; ktn_edges[i].second = ts_conns_ptr[i][1]; }
     UndirectedGraph ktn(ktn_edges,ktn_edges+nts,ktn_wts,nmin,nts);
 
+    long double ktn_wts_min = -1000.;
+    for (int i=0;i<nts;i++) {
+        //cout << ts_ens[i] << endl;
+        //if (ts_ens[i] > ktn_wts_min) { ktn_wts_min = ts_ens[i]; }
+        cout << ts_ens[i] << "  " << ktn_wts[i] << "   " << ktn_edges[i].first << "  " << ktn_edges[i].second << endl;
+        if (ktn_wts[i] < ktn_wts_min) { ktn_wts_min = ktn_wts[i]; }
+    }
+    cout << "ktn_wts_min is: " << ktn_wts_min << endl;
+    //exit(1);
+
     // run the Stoer-Wagner algorithm from the boost library
     auto parities = boost::make_assoc_property_map(parities_tmp);
-    int cut_wt = boost::stoer_wagner_min_cut(ktn,get(boost::edge_weight,ktn), \
+    cout << "beginning Stoer-Wagner algorithm..." << endl;
+    long double cut_wt = boost::stoer_wagner_min_cut(ktn,get(boost::edge_weight,ktn), \
             boost::parity_map(parities));
     
     // copied from stoer-wagner example
-    cout << "The min-cut weight of G is " << cut_wt << "\n" << endl;
+    cout << "min-cut weight of the ktn: " << cut_wt << endl;
 
+    int n_set = 0;
     cout << "One set of vertices consists of:" << endl;
     for (int i = 0; i < num_vertices(ktn); ++i) {
-        if (get(parities, i))
-            cout << i << endl;
-      }
-      cout << endl;
-      
-      cout << "The other set of vertices consists of:" << endl;
-      for (int i = 0; i < num_vertices(ktn); ++i) {
-        if (!get(parities, i))
-          cout << i << endl;
-      }
-      cout << endl;
+        if (get(parities, i)) { n_set++; } }
+    cout << "   " << n_set << "  minima" << endl;
 
+    n_set = 0;
+    cout << "The other set of vertices consists of:" << endl;
+    for (int i = 0; i < num_vertices(ktn); ++i) {
+        if (!get(parities, i)) { n_set++; } }
+    cout << "   " << n_set << "  minima" << endl;
 
+    cout << "\nlisting transition states in rate-limiting cut:" << endl;
+    for (int i=0;i<nts;i++) {
+        cout << "parities:  " << get(parities,ktn_edges[i].first) << "  " << get(parities,ktn_edges[i].second) << endl;
+        if ( (get(parities,ktn_edges[i].first) && (!get(parities,ktn_edges[i].second))) ||
+             (!get(parities,ktn_edges[i].first) && (get(parities,ktn_edges[i].second))) ) {
+        cout << "ts: " << i+1 << " energy: " << ts_ens[i] << " weight: " << ktn_wts[i] << endl; }
+    }
+    cout << endl;
 
     // cleanup
     delete[] ts_ens;
