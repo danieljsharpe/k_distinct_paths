@@ -24,6 +24,7 @@ random_ktn <ndim> <xmax> <d_thr> <V> <refp_id> <refp1> <refp2> <maxit> <errtol> 
     <seed>    - (optional) random seed
 e.g.
 random_ktn 5 5 2.5 1000 0 1 0 10 0.01 2 1 0 0.5 8
+random_ktn 5 5 2.5 1000 2 12.4 6.1 10 0.01 2 1 0 0.5 8
 
 Daniel J. Sharpe
 Feb 2019
@@ -76,11 +77,9 @@ double get_distrib_err (vector<int> deg_distrib, Degree_distrib_funcs *ddf_obj, 
 
     vector<double> deg_distrib_ref(deg_distrib.size(),0.);
     int i =0; double err = 0.; // % error between reference and current degree distributions
-    //cout << "getting distribn error..." << endl;
     for (auto &x: deg_distrib) {
-        //cout << "k: " << i << " number of nodes: " << deg_distrib[i] << endl;
         deg_distrib_ref[i] = (ddf_obj->*ddf_ptr)(i);
-        err += (abs(deg_distrib_ref[i]-(double(deg_distrib[i])/double(V)))/double(V))*100.;
+        err += (abs(deg_distrib_ref[i]-(double(deg_distrib[i])/double(V))));
         i++;
     }
     return err;
@@ -90,23 +89,18 @@ vector<int> get_deg_distrib(double *edges, const int ndim, const int V, int old_
 
     vector<int> deg_distrib(old_cap,0);
     vector<int>::size_type sz = deg_distrib.capacity();
-    cout << "beginning loop..." << endl;
     for (int i=0;i<V;i++) {
         int deg = 0;
         for (int j=0;j<V;j++) {
             if (edges[(i*V)+j] != 0.) { deg++; } }
-        //cout << "finished with node " << i << " degree is: " << deg << endl;
         if (deg > sz) { // update capacity of vector
-            cout << "updating capacity of vector... deg = " << deg << endl;
             deg_distrib.reserve(deg+1);
             for (int k=sz+1;k<deg;k++) {
                 deg_distrib.push_back(0);
-                sz = deg_distrib.capacity();
-                cout << "updated capacity of vector to: " << sz << " because of node of deg: " << deg << endl; }
+                sz = deg_distrib.capacity(); }
         }
         deg_distrib[deg]++;
     }
-    cout << "returning deg_distrib" << endl;
     return deg_distrib;
 }
 
@@ -120,43 +114,52 @@ void get_final_edges (double *v_pos, double *edges, const int ndim, const int V,
                       double d_thr, int maxit, double errtol, Degree_distrib_funcs *ddf_obj, \
                       Ddfmembfunc ddf_ptr, double xmax, int seed) {
 
+    int v_id;
     double err = numeric_limits<double>::infinity();
-    double old_err;
-    vector<int> deg_distrib; deg_distrib.reserve(20);
+    double old_err; int old_cap = 20; double old_d_thr;
+    vector<int> deg_distrib;
     int nattempt = 0;
     do {
-        if ((nattempt%10==0)&&(nattempt!=0)) {
-            cout << "current error after " << nattempt << " steps: " << err << endl; }
         old_err = err;
-        // Monte Carlo move
-        // move a random vertex to a new point in the embedding space
-        int v_id = rand_unif(0,V,seed);
-        cout << "selected node: " << v_id << endl;
+        if ((nattempt%10==0)&&(nattempt!=0)) { // scale distance threshold move
+        old_d_thr = d_thr; d_thr *= 1.05;
+        cout << "current error after " << nattempt << " steps: " << err << endl;
+        get_init_edges(v_pos,edges,ndim,V,d_thr);
+        vector<int> deg_distrib2 = get_deg_distrib(edges,ndim,V,old_cap);
+        err = get_distrib_err(deg_distrib2,ddf_obj,ddf_ptr,V);
+        if (not (err < old_err)) { // reject move
+            cout << "  rejecting threshold move..." << endl;
+            err = old_err; old_cap = deg_distrib2.capacity(); d_thr = old_d_thr; }
+        else { cout << "  accepting threshold move..." << endl; deg_distrib = deg_distrib2; }
+        } else { // move a random vertex to a new point in the embedding space
+        v_id = rand_unif(0,V-1,seed);
         double *old_pos = new double[ndim];
         std::copy(v_pos+(v_id*ndim),v_pos+(v_id*ndim)+ndim,old_pos);
         for (int i=0;i<ndim;i++) {
             v_pos[(v_id*ndim)+i] = rand_unif(-xmax,xmax,seed); }
         // update degree distribution and accept if better match with reference distribution
         get_init_edges(v_pos,edges,ndim,V,d_thr);
-        cout << "assigning deg_distrib..." << endl;
-        deg_distrib = get_deg_distrib(edges,ndim,V,deg_distrib.capacity());
-        cout << "finished assigning deg_distrib..." << endl;
-        err = get_distrib_err(deg_distrib,ddf_obj,ddf_ptr,V);
-        cout << "new error: " << err << endl;
+////        update_edges(v_pos,edges,ndim,V,d_thr);
+        vector<int> deg_distrib2 = get_deg_distrib(edges,ndim,V,old_cap);
+        err = get_distrib_err(deg_distrib2,ddf_obj,ddf_ptr,V);
         if (not (err < old_err)) { // reject move
-            err = old_err;
-            std::copy(v_pos+(v_id*ndim),v_pos+(v_id*ndim)+ndim,old_pos); } // restore old position
+            err = old_err; old_cap = deg_distrib2.capacity();
+            for (int i=0;i<ndim;i++) { v_pos[(v_id*ndim)+i] = old_pos[i]; }
+        } else { cout << "  accepting move..." << endl; deg_distrib = deg_distrib2; }
         delete[] old_pos;
+        }
         nattempt++;
-    } while (err > errtol and nattempt < maxit);
+        if ((err < errtol) || (nattempt > maxit)) { break; }
+    } while (true);
     if (not nattempt<maxit) {
         cout << "Warning: exceeded max number of attempts to adjust degree distribution" << endl;
         cout << "error between reference and current distributions: " << err << endl; }
     else { cout << "succeeded to decrease error below tolerance, final error: " << err << endl; }
-    cout << "final degree distribution:" << endl;
+    cout << "final degree distribution (vs ref):" << endl;
     int i=0;
     for (auto &x: deg_distrib) {
-        cout << "  " << i << "   " << deg_distrib[i] << endl; i++; }
+        cout << "  " << i << "   " << deg_distrib[i] << "      " << \
+                double(deg_distrib[i])/double(V) << "   " << (ddf_obj->*ddf_ptr)(i) << endl; i++; }
 }
 
 void get_init_edges (double *v_pos, double *edges, const int ndim, const int V, \
