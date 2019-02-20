@@ -5,7 +5,8 @@ Compile with:
 g++ -std=c++11 random_ktn.cpp -o random_ktn
 
 Usage:
-random_ktn <ndim> <xmax> <d_thr> <V> <refp_id> <refp1> <refp2> <maxit> <errtol> <nbasins> <op> <mu> <sigma> <b> (<seed>)
+random_ktn <ndim> <xmax> <d_thr> <V> <refp_id> <refp1> <refp2> <maxit> <errtol> <nbasins>
+           <op> <mu> <sigma> <b> (<seed>)
     <ndim>    - dimensionality of space in which vertices are randomly embedded
     <xmax>    - bounds of space are (-xmax,+xmax) in all dimensions ndim
     <d_thr>   - Euclidean distance threshold for considering two minima to be connected
@@ -26,11 +27,11 @@ random_ktn <ndim> <xmax> <d_thr> <V> <refp_id> <refp1> <refp2> <maxit> <errtol> 
     <seed>    - (optional) random seed
 
 e.g.1. fit 1000 nodes to a Poisson distribution with lambda=4, with energies according to 2 minima chosen as harmonic basins
-./random_ktn 5 5 2.5 1000 0 4 0 1000 0.01 2 1 0 0.5 8 15
+./random_ktn 5 5. 2.5 1000 0 4 0 1000 0.01 2 1 0 0.5 8 15
 
 e.g.2. fit 1000 nodes to a Poisson distribution with lambda=4, with energies according to the user-defined
        three-hole potential
-./random_ktn 2 2 0.15 1000 0 4 0 1000 0.01 -1 0 0 0.2 0.25
+./random_ktn 2 2. 0.15 1000 0 4 0 1000 0.01 -1 0 0 0.04 0.2
 
 random_ktn 5 5 2.5 1000 2 12.4 6.1 10 0.01 2 1 0 0.5 8
 
@@ -52,12 +53,13 @@ Feb 2019
 
 using namespace std;
 
-/* a user-defined potential function, called to give minima energies if nbasins = -1 */
+/* a user-defined potential function, called to give minima energies if nbasins = -1. This is the
+   three-hole potential, shifted so that the two deep minima are at x[1] = -2./3. */
 double pot_func (double *x) {
 
-    return 3.*exp(-pow(x[0],2.)-pow(x[1]-(1./3.),2.)) - 3.*exp(-pow(x[0],2.)-pow(x[1]-(5./3.),2.)) \
-           - 5.*exp(-pow(x[0]-1.,2.)-pow(x[1],2.)) - 5.*exp(-pow(x[0]+1.,2.)-pow(x[1],2.)) \
-           + 0.2*pow(x[0],4.) + 0.2*pow(x[1]-(1./3.),4.);
+    return 3.*exp(-pow(x[0],2.)-pow(x[1]+(1./3.),2.)) - 3.*exp(-pow(x[0],2.)-pow(x[1]-1.,2.)) \
+           - 5.*exp(-pow(x[0]-1.,2.)-pow(x[1]+(2./3.),2.)) - 5.*exp(-pow(x[0]+1.,2.)-pow(x[1]+(2./3.),2.)) \
+           + 0.2*pow(x[0],4.) + 0.2*pow(x[1],4.);
 }
 
 struct Degree_distrib_funcs {
@@ -90,12 +92,14 @@ void write_energies (double *min_ens, double *ts_ens, int V, int n_ts, double *e
         for (auto &min_id: *bad_min) {
             if (i==min_id) { is_bad = true; } }
         if (is_bad) { continue; }
-        mindataf << min_ens[i] << endl; }
+        mindataf << min_ens[i] << "  " << 1. << "  " << 1 << "  " << 1. << "  " << \
+                    1. << "  " << 1. << endl; }
     mindataf.close();
     ofstream tsdataf;
     tsdataf.open("ts.data.dummy",ios::out);
     for (int i=0;i<n_ts;i++) {
-        tsdataf << ts_ens[i] << "  " << ts_conns[i].first << "  " << ts_conns[i].second << endl; }
+        tsdataf << ts_ens[i] << "  " << 0. << "  " << 1 << "  " << ts_conns[i].first << "  " << \
+                   ts_conns[i].second << "  " << 1. << "  " << 1. << "  " << 1. << endl; }
    
 }
 
@@ -136,42 +140,40 @@ void get_ts_ens_and_pos (double *min_ens, double *ts_ens, double *ts_pos, int n_
                          vector<int> *bad_min, pair<int,int> *ts_conns, int seed) {
 
     int n_bad_i = 0; int n_bad_j; bool is_bad_i; bool is_bad_j; double higher_en;
-    int ts_id = 0;
+    int ts_id = 0; int n_bad_ts = 0;
     for (int i=0;i<V;i++) {
         is_bad_i = false;
         for (auto &min_id: *bad_min) {
             if (i==min_id) { is_bad_i = true; } }
         if (is_bad_i) { n_bad_i++; }
+        n_bad_j = 0;
         for (int j=0;j<V;j++) {
-            n_bad_j = 0; is_bad_j = false;
+            is_bad_j = false;
             for (auto &min_id: *bad_min) {
                 if (j==min_id) { is_bad_j = true; } }
             if (is_bad_j) { n_bad_j++; }
             if (edges[(i*V)+j] != 0.) { // we have a transition state
-                ts_id++;
                 // assign the connections for this transition state
-                ts_conns[ts_id] = make_pair(i-n_bad_i,j-n_bad_j);
+                ts_conns[ts_id] = make_pair(i-n_bad_i+1,j-n_bad_j+1);
                 // assign an energy to this transition state
                 if (min_ens[i] < min_ens[j]) { higher_en = min_ens[i]; }
                 else { higher_en = min_ens[j]; }
                 do {
-                    ts_ens[ts_id] = higher_en + b + rand_normal(mu,sigma,seed);
+                    ts_ens[ts_id] = higher_en + b + rand_normal(0.,sigma,seed);
                     if (ts_ens[ts_id] > higher_en) { break; }
                 } while (true);
                 // assign a position to this transition state - directly in between the two minima
                 for (int dim=0;dim<ndim;dim++) {
                     ts_pos[(ts_id*ndim)+dim] = (v_pos[(i*ndim)+dim] - v_pos[(j*ndim)+dim])/2.; }
-            }
+                ts_id++; }
         }
     }
-
 }
 
 void get_min_ens (double *min_ens, int V, int nbasins, int op, double mu, double sigma, \
                   double (*pot_func_ptr)(double *), int ndim, double *v_pos) {
 
     if (pot_func_ptr) { // the user-defined potential function gives the energies of minima
-        double init_coords[] = {1.,1.3};
         for (int i=0;i<V;i++) {
             double *pos_i = new double[ndim];
             std::copy(v_pos+(i*ndim),v_pos+(i*ndim)+ndim,pos_i);
@@ -197,7 +199,7 @@ double get_distrib_err (vector<int> deg_distrib, Degree_distrib_funcs *ddf_obj, 
                         Ddfmembfunc ddf_ptr, const int V) {
 
     vector<double> deg_distrib_ref(deg_distrib.size(),0.);
-    int i =0; double err = 0.; // error between reference and current degree distributions
+    int i = 0; double err = 0.; // error between reference and current degree distributions
     for (auto &x: deg_distrib) {
         deg_distrib_ref[i] = (ddf_obj->*ddf_ptr)(i);
         err += (abs(deg_distrib_ref[i]-(double(deg_distrib[i])/double(V))));
@@ -224,6 +226,11 @@ vector<int> get_deg_distrib(double *edges, const int ndim, const int V, int old_
         if ((bad_min) && (deg==0)) { bad_min->push_back(i); }
         deg_distrib[deg]++;
     }
+    cout << "\ndeg_distrib is now:" << endl;
+    int i = -1;
+    for (auto &x: deg_distrib) {
+        i++;
+        cout << "  " << i << "   " << deg_distrib[i] << endl; }
     return deg_distrib;
 }
 
@@ -242,12 +249,12 @@ pair<pair<int,int>,vector<int> *> get_final_edges (double *v_pos, double *edges,
     double err = numeric_limits<double>::infinity();
     double old_err; int old_cap = 5; double old_d_thr;
 ///    vector<int> deg_distrib(old_cap,0);
-    vector<int> *bad_min = new vector<int>; // IDs of disconnected minima
+    vector<int> *bad_min = new vector<int>(); // IDs of disconnected minima
     int nattempt = 0;
     do {
         old_err = err;
         if ((nattempt%10==0)&&(nattempt!=0)) { // scale distance threshold move
-        old_d_thr = d_thr; double rand_no = rand_unif(0.9,1.05,seed);
+        old_d_thr = d_thr; double rand_no = rand_unif(0.8,1.1,seed);
         cout << "current error after " << nattempt << " steps: " << err << endl;
         get_init_edges(v_pos,edges,ndim,V,d_thr);
         vector<int> deg_distrib2 = get_deg_distrib(edges,ndim,V,old_cap);
@@ -272,7 +279,9 @@ pair<pair<int,int>,vector<int> *> get_final_edges (double *v_pos, double *edges,
         err = get_distrib_err(deg_distrib2,ddf_obj,ddf_ptr,V);
 //        cout << "got distribution error..." << endl;
         old_cap = deg_distrib2.capacity();
+        cout << "err: " << err << " old_err: " << old_err << endl;
         if (not (err < old_err)) { // reject move
+            // NEED TO RESTORE OLD EDGES
 //            cout << "rejecting move..." << endl;
             err = old_err;
             for (int i=0;i<ndim;i++) { v_pos[(v_id*ndim)+i] = old_pos[i]; }
@@ -390,10 +399,11 @@ int main(int argc, char** argv) {
 
     // cleanup
     delete degree_distrib_func;
-    delete[] v_pos;
-    delete[] edges;
-    delete[] min_ens; delete[] ts_ens; delete[] ts_pos; delete[] ts_conns;
-    delete[] bad_min;
+    delete[] v_pos; delete[] edges;
+    delete[] min_ens; delete[] ts_ens; delete[] ts_pos;
+    delete[] ts_conns;
+    bad_min->clear();
+    delete bad_min;
 
     return 0;
 }
