@@ -33,6 +33,10 @@ e.g.2. fit 1000 nodes to a Poisson distribution with lambda=4, with energies acc
        three-hole potential
 ./random_ktn 2 2. 0.15 1000 0 4 0 1000 0.01 -1 0 0 0.04 0.2
 
+e.g.3. fit 1000 nodes to a power-law distribution with gamma = 2.5, with energies according
+       to the user-defined three-hole potential
+./random_ktn 2 2. 0.15 1000 1 2.5 1. 1000 0.01 -1 0 0 0.04 0.2
+
 random_ktn 5 5 2.5 1000 2 12.4 6.1 10 0.01 2 1 0 0.5 8
 
 Daniel J. Sharpe
@@ -73,7 +77,8 @@ struct Degree_distrib_funcs {
         return (pow(ddf1,double(k))*exp(-ddf1)/double(tgamma(k+1))); }
 
     double power_law_distrib (int k) { // alpha*k(-gamma)
-        return ddf1*pow(k,-ddf2); }
+        if (k!=0) { return ddf2*pow(k,-ddf1); }
+        else { return 0.; }  }
 
     double gaussian_distrib (int k) { // ddf1 = mean, ddf2 = std dev
         return (1./(ddf2*pow(2.*pi,0.5)))*exp(-pow(double(k)-ddf1,2.)/(2.*pow(ddf2,2.))); }
@@ -386,11 +391,19 @@ int main(int argc, char** argv) {
     Degree_distrib_funcs *degree_distrib_func = new Degree_distrib_funcs(refp1,refp2);
     Ddfmembfunc ddf_ptr;
     if (refp_id==0) { ddf_ptr = &Degree_distrib_funcs::poisson_distrib; }
-    else if (refp_id==1) { ddf_ptr = &Degree_distrib_funcs::power_law_distrib; }
+    else if (refp_id==1) { ddf_ptr = &Degree_distrib_funcs::power_law_distrib;
+        // set prefactor so that power law distribution is normalised
+        double cum_tot = 0.; int i = 1;
+        do {
+            cum_tot += (degree_distrib_func->*ddf_ptr)(i);
+            i++;
+        } while ((degree_distrib_func->*ddf_ptr)(i) > 1.E-05);
+        degree_distrib_func->ddf2 = (1./cum_tot); }
     else if (refp_id==2) { ddf_ptr = &Degree_distrib_funcs::gaussian_distrib; }
     double (*pot_func_ptr)(double *);
     if (nbasins==-1) { pot_func_ptr = &pot_func; }
     else { pot_func_ptr = nullptr; }
+    cout << degree_distrib_func->ddf2 << endl;
     cout << "finished initialising" << endl;
 
     // build kinetic transition network connectivity from predefined degree distribution
