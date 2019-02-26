@@ -6,7 +6,7 @@ g++ -std=c++11 random_ktn.cpp -o random_ktn
 
 Usage:
 random_ktn <ndim> <xmax> <d_thr> <V> <refp_id> <refp1> <refp2> <maxit> <errtol> <nbasins>
-           <op> <mu> <sigma> <b> (<seed>)
+           <mu> <sigma> <b> (<seed>)
     <ndim>    - dimensionality of space in which vertices are randomly embedded
     <xmax>    - bounds of space are (-xmax,+xmax) in all dimensions ndim
     <d_thr>   - Euclidean distance threshold for considering two minima to be connected
@@ -17,27 +17,25 @@ random_ktn <ndim> <xmax> <d_thr> <V> <refp_id> <refp1> <refp2> <maxit> <errtol> 
     <maxit>   - max no. of attempts for position changes of vertices
     <errtol>  - tolerance of error between real and reference degree distributions
     <nbasins> - number of vertices to be randomly selected as harmonic basins
-                if = -1, then the "pot_func" function is used to assign minima energies, and <op> & <mu>
-                are ignored, as is <sigma> for minima energies.
-    <op>      - order parameter determining roughness of landscape
-    <mu>      - mean of minima energies (Boltzmann factor gives node weights)
+                if = -1, then the "pot_func" function is used to assign minima energies, and <mu>
+                is ignored, as is <sigma> for minima energies.
+    <mu>      - minima energies (Boltzmann factor gives node weights) are given by: mu*(x_i-x_0)^2, where
+                x_i is the position of minimum i and x_0 is the position of the nearest harmonic basin minimum
     <sigma>   - std dev of minima and transition state energies
     <b>       - TS energy is b+Gaussian(0,sigma) higher in energy than the highest-energy of the
                 pair of minima that it connects (also TS energy must be greater)
     <seed>    - (optional) random seed
 
-e.g.1. fit 1000 nodes to a Poisson distribution with lambda=4, with energies according to 2 minima chosen as harmonic basins
-./random_ktn 5 5. 2.5 1000 0 4 0 1000 0.01 2 1 0 0.5 8 15
+e.g.1. fit 1000 nodes to a Poisson distribution with lambda=8, with energies according to 2 minima chosen as harmonic basins
+./random_ktn 5 5. 2.5 1000 0 8 0 1000 0.01 2 1. 0.5 8.
 
-e.g.2. fit 1000 nodes to a Poisson distribution with lambda=4, with energies according to the user-defined
+e.g.2. fit 1000 nodes to a Poisson distribution with lambda=8, with energies according to the user-defined
        three-hole potential
-./random_ktn 2 2. 0.15 1000 0 4 0 1000 0.01 -1 0 0 0.04 0.2
+./random_ktn 2 2. 0.15 1000 0 8 0 1000 0.01 -1 0 0.04 0.2
 
 e.g.3. fit 1000 nodes to a power-law distribution with gamma = 2.5, with energies according
        to the user-defined three-hole potential
-./random_ktn 2 2. 0.15 1000 1 2.5 1. 1000 0.01 -1 0 0 0.04 0.2
-
-random_ktn 5 5 2.5 1000 2 12.4 6.1 10 0.01 2 1 0 0.5 8
+./random_ktn 2 2. 0.15 1000 1 2.5 1. 1000 0.01 -1 0 0.04 0.2
 
 Daniel J. Sharpe
 Feb 2019
@@ -152,14 +150,14 @@ void get_ts_ens_and_pos (double *min_ens, double *ts_ens, double *ts_pos, int n_
             if (i==min_id) { is_bad_i = true; } }
         if (is_bad_i) { n_bad_i++; }
         n_bad_j = 0;
-        for (int j=0;j<V;j++) {
+        for (int j=i+1;j<V;j++) {
             is_bad_j = false;
             for (auto &min_id: *bad_min) {
                 if (j==min_id) { is_bad_j = true; } }
             if (is_bad_j) { n_bad_j++; }
             if (edges[(i*V)+j] != 0.) { // we have a transition state
                 // assign the connections for this transition state
-                ts_conns[ts_id] = make_pair(i-n_bad_i+1,j-n_bad_j+1);
+                ts_conns[ts_id] = make_pair(i-n_bad_i+1,j-n_bad_i-n_bad_j+1);
                 // assign an energy to this transition state
                 if (min_ens[i] < min_ens[j]) { higher_en = min_ens[i]; }
                 else { higher_en = min_ens[j]; }
@@ -175,20 +173,6 @@ void get_ts_ens_and_pos (double *min_ens, double *ts_ens, double *ts_pos, int n_
     }
 }
 
-void get_min_ens (double *min_ens, int V, int nbasins, int op, double mu, double sigma, \
-                  double (*pot_func_ptr)(double *), int ndim, double *v_pos) {
-
-    if (pot_func_ptr) { // the user-defined potential function gives the energies of minima
-        for (int i=0;i<V;i++) {
-            double *pos_i = new double[ndim];
-            std::copy(v_pos+(i*ndim),v_pos+(i*ndim)+ndim,pos_i);
-            min_ens[i] = pot_func_ptr(pos_i);
-            delete[] pos_i;
-        }
-    } else { // the nbasins and op arguments give the energies of minima
-    }
-}
-
 template <class T>
 static T rand_unif(T xmin, T xmax, int seed) {
     static std::default_random_engine generator (seed);
@@ -198,6 +182,41 @@ static T rand_unif(T xmin, T xmax, int seed) {
     else if (typeid(T) == typeid(int)) {
         std::uniform_int_distribution<int> distribution2(xmin,xmax);
         return distribution2(generator); }
+}
+
+void get_min_ens (double *min_ens, int V, int nbasins, double mu, double sigma, \
+                  double (*pot_func_ptr)(double *), int ndim, double *v_pos, int seed) {
+
+    if (pot_func_ptr) { // the user-defined potential function gives the energies of minima
+        for (int i=0;i<V;i++) {
+            double *pos_i = new double[ndim];
+            std::copy(v_pos+(i*ndim),v_pos+(i*ndim)+ndim,pos_i);
+            min_ens[i] = pot_func_ptr(pos_i);
+            delete[] pos_i;
+        }
+    } else { // nbasins minima are selected as harmonic basins to give the energies of minima
+        vector<int> basin_mins; int basin_min;
+        cout << "selecting the following minima as harmonic basins:" << endl;
+        for (int i=0;i<nbasins;i++) { // randomly select the minima that are harmonic basins
+            do {
+            basin_min = rand_unif(0,V-1,seed);
+            bool is_basin = false;
+            for (auto &min: basin_mins) {
+                if (min==basin_min) { is_basin = true; } }
+            if (not is_basin) { break; }
+            } while (true);
+            basin_mins.push_back(basin_min); cout << basin_min << endl;
+        }
+        for (int i=0;i<V;i++) { // assign energies based on distance from harmonic basins
+            double ssqd_best = numeric_limits<double>::infinity();
+            for (auto &min: basin_mins) {
+                double ssqd = 0.;
+                for (int dim=0;dim<ndim;dim++) {
+                    ssqd += pow(v_pos[(i*ndim)+dim]-v_pos[(min*ndim)+dim],2.); }
+                if (ssqd < ssqd_best) { ssqd_best = ssqd; } }
+            min_ens[i] = mu*ssqd_best + rand_normal(0.,sigma,seed);
+        }
+    }
 }
 
 pair<double,double> get_distrib_err (vector<int> deg_distrib, Degree_distrib_funcs *ddf_obj, \
@@ -340,6 +359,7 @@ pair<pair<int,int>,vector<int> *> get_final_edges (double *v_pos, double *edges,
         n_ts += i*deg_distrib[i];
         cout << "  " << i << "   " << deg_distrib[i] << "      " << \
                 double(deg_distrib[i])/double(V) << "   " << (ddf_obj->*ddf_ptr)(i) << endl; i++; }
+    n_ts *= 0.5; // number of transition states is equal to half the no. of edges
     pair<int,int> retval_tmp = make_pair(deg_distrib[0],n_ts);
     pair<pair<int,int>,vector<int> *> retval = make_pair(retval_tmp,bad_min);
     return retval;
@@ -382,11 +402,11 @@ int main(int argc, char** argv) {
     const int V = stoi(argv[4]); int refp_id = stoi(argv[5]);
     double refp1 = stod(argv[6]); double refp2 = stod(argv[7]);
     int maxit = stoi(argv[8]); double errtol = stod(argv[9]);
-    int nbasins = stoi(argv[10]); double op = stod(argv[11]);
-    double mu = stod(argv[12]); double sigma = stod(argv[13]);
-    double b = stod(argv[14]);
+    int nbasins = stoi(argv[10]);
+    double mu = stod(argv[11]); double sigma = stod(argv[12]);
+    double b = stod(argv[13]);
     int seed;
-    if (argc > 15) { seed = stoi(argv[15]); }
+    if (argc > 14) { seed = stoi(argv[14]); }
     else { srand(time(NULL)); seed = rand(); }
     Degree_distrib_funcs *degree_distrib_func = new Degree_distrib_funcs(refp1,refp2);
     Ddfmembfunc ddf_ptr;
@@ -427,7 +447,7 @@ int main(int argc, char** argv) {
     double *ts_ens = new double[n_ts];
     double *ts_pos = new double[n_ts*ndim];
     pair<int,int> *ts_conns = new pair<int,int>[n_ts];
-    get_min_ens(min_ens,V,nbasins,op,mu,sigma,pot_func_ptr,ndim,v_pos);
+    get_min_ens(min_ens,V,nbasins,mu,sigma,pot_func_ptr,ndim,v_pos,seed);
     get_ts_ens_and_pos(min_ens,ts_ens,ts_pos,n_ts,mu,sigma,b,ndim,v_pos,edges,V,bad_min, \
                        ts_conns,seed);
     cout << "assigned minima and transition state energies" << endl;
