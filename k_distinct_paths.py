@@ -27,10 +27,10 @@ class K_Distinct_Paths(object):
 
     def __init__(self):
         ### PARAMS - update as desired
-        self.k = 10           # no. of paths to find
+        self.k = 5            # no. of paths to find
         self.M = float("inf") # a large number for effective blocking of edges
         self.T = 298.         # temperature / K (used to calculate inverse Boltzmann weights in Noe scheme)
-        self.s = 7            # start node (=1 for example min.data file)
+        self.s = 7            # start node (=1 for example min.data file) (=min.A for DIRECTION AB)
         self.t = 1            # end node (=3345 for example min.data file, =17 for toy problem, =2 for min.data.removed)
         self.costfunc = "fromfile"  # choose a function for calculating the edge weights based on TS energies. Options:
                                     # noe_ts: Noe's scheme based on inverse Boltzmann weighting of TS energies
@@ -183,7 +183,8 @@ class K_Distinct_Paths(object):
             for q, dist_q in G[z].iteritems():
                 if q not in red_vertices:
                     nonred_nbr = True
-                    qz_edgecost = G[z][q][0]
+                    qz_edgecost = G[q][z][0]
+#                    if q==760: print "z:", z, "q:", q, "qz_edgecost:", qz_edgecost
                     f_level_z = self.dist[q-1] + qz_edgecost
                     if u is None or f_level_z < f_level_z_best: # found a new best nonred neighbour u
                         u = q
@@ -204,8 +205,8 @@ class K_Distinct_Paths(object):
                 break
             for h, dist_h in G[z].iteritems():
                 if h in red_vertices:
-                    hz_edgecost = G[z][h][0]
-                    f_level_z = self.dist[z-1] + hz_edgecost
+                    zh_edgecost = G[z][h][0]
+                    f_level_z = self.dist[z-1] + zh_edgecost
                     if f_level_z < self.dist[h-1]:
                         self.dist[h-1] = f_level_z
                         self.prev[h-1] = z
@@ -313,7 +314,7 @@ class K_Distinct_Paths(object):
                                          min_energies[ts_conns[i-1,1]-1],min_frqs[ts_conns[i-1,0]-1], \
                                          min_frqs[ts_conns[i-1,1]-1],ts_frqs[i-1],ts_conns[i-1,0],ts_conns[i-1,1])
             elif weights_ps is not None:
-            ##    if weights_ps[i-1,0]==0. and weights_ps[i-1,1]==0.: continue # quack
+            ##    if weights_ps[i-1,0]==0. and weights_ps[i-1,1]==0.: continue # quack - this is same as dead TS condition above
                 ts_cost1, ts_cost2 = weights_ps[i-1,0], weights_ps[i-1,1]
             # happens when there is another TS (with higher ID) that connects the same pair of minima
             ##if ts_cost1==0. or ts_cost2==0.: continue
