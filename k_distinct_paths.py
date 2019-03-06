@@ -27,16 +27,20 @@ class K_Distinct_Paths(object):
 
     def __init__(self):
         ### PARAMS - update as desired
-        self.k = 15           # no. of paths to find
+        self.k = 10           # no. of paths to find
         self.M = float("inf") # a large number for effective blocking of edges
-        self.T = 298.         # temperature / K (used to calculate inverse Boltzmann weights)
-        self.s = 41           # start node (=1 for example min.data file)
-        self.t = 4298         # end node (=3345 for example min.data file, =17 for toy problem, =2 for min.data.removed)
+        self.T = 298.         # temperature / K (used to calculate inverse Boltzmann weights in Noe scheme)
+        self.s = 7            # start node (=1 for example min.data file)
+        self.t = 1            # end node (=3345 for example min.data file, =17 for toy problem, =2 for min.data.removed)
         self.costfunc = "fromfile"  # choose a function for calculating the edge weights based on TS energies. Options:
                                     # noe_ts: Noe's scheme based on inverse Boltzmann weighting of TS energies
                                     # noe_b: Noe's scheme based on inverse Boltzmann weighting of "edge barriers"
                                     # evans: Evans' scheme based on a log-weighted adjacency matrix
                                     # fromfile: read a file "kdp_tsedges.dat" dumped by the PATHSAMPLE program
+        self.rle_defn = "ts_energy" # definition for what constitutes the rate-limiting edge (to be blocked). Options:
+                                    # absolute: the RLE is that with the greatest weight
+                                    # barrier: the RLE is that corresponding to the largest energy barrier
+                                    # ts_energy: the RLE is that correspond to the TS with the highest energy
         self.Natoms = 138           # only needed if costfunc is "wales"
         self.write_epath = True     # write Epath.<PATH> files Y/N
         self.write_mdf = True       # write min.data.fastest.<PATH> files Y/N
@@ -93,17 +97,27 @@ class K_Distinct_Paths(object):
 
     '''Given a shortest path between start and end nodes, find the rate-limiting edge'''
     @staticmethod
-    def find_rle(P, mode="absolute", G=None, min_energies=None, ts_energies=None):
+    def find_rle(P, mode, G=None, min_energies=None, ts_energies=None):
         if mode == "absolute": # return edge with largest weight
             return P.index(max(P,key=lambda x: x[1]))
-        elif mode == "barrier": # return edge corresponding to the TS representing the highest individual energy barrier
-            P_barr = [[i[0],0.] for i in P]
+        elif mode == "barrier" or mode == "ts_energy":
+            P_barr = [[i[0],-float("inf")] for i in P]
             for step_no in range(len(P)-1):
                 v1, v2 = P[step_no][0], P[step_no+1][0]
                 ts_idx = G[v1][v2][1]
-                barr_en = ts_energies[ts_idx-1] - min_energies[v1-1]
+                if mode == "barrier": # return edge corresponding to the TS representing the highest individual energy barrier
+                    barr_en = ts_energies[ts_idx-1] - min_energies[v1-1]
+                elif mode == "ts_energy": # return edge corresponding to the TS of highest energy along the pathway
+                    barr_en = ts_energies[ts_idx-1]
                 P_barr[step_no+1][1] = barr_en
             return P_barr.index(max(P_barr,key=lambda x: x[1]))
+
+    '''get indices and costs associated with the rate-limiting edge'''
+    def get_rle(self, P, mode, G=None, min_energies=None, ts_energies=None):
+        rate_lim_edge_idx = K_Distinct_Paths.find_rle(P,self.rle_defn,G,min_energies,ts_energies)
+        rate_lim_edge = (P[rate_lim_edge_idx-1][0],P[rate_lim_edge_idx][0])
+        y, x = rate_lim_edge[0], rate_lim_edge[1]
+        return rate_lim_edge_idx, y, x
 
     '''Algorithm of Frigioni, Marchetti-Spaccamela & Nanni for determining shortest paths (given an original shortest path tree)
        when an edge on the original shortest path is modified to have increased cost'''
@@ -111,11 +125,9 @@ class K_Distinct_Paths(object):
         print "\n>>> FINDING THE (k-1) NEXT DISTINCT PATHWAYS BY MARCHETTI-SPACCAMELLA ALGORITHM\n"
         for path_i in range(self.k-1):
             print "\n>>> MARCHETTI ITERATION # %i\n" % (path_i+1)
-            rate_lim_edge_idx = K_Distinct_Paths.find_rle(P,"absolute")
-#            rate_lim_edge_idx = K_Distinct_Paths.find_rle(P,"barrier",G,min_energies,ts_energies)
-            rate_lim_edge = (P[rate_lim_edge_idx-1][0],P[rate_lim_edge_idx][0])
-            y, x = rate_lim_edge[0], rate_lim_edge[1]
-            print "The rate-limiting edge is:", rate_lim_edge, "with associated cost:", P[rate_lim_edge_idx][1], \
+            rate_lim_edge_idx, y, x = self.get_rle(P,self.rle_defn,G,min_energies,ts_energies)
+            read_mindata.write_rlc(G[y][x][1],P[rate_lim_edge_idx][1],self.dist[self.t-1],path_i+1)
+            print "The rate-limiting edge is:", (y,x), "with associated cost:", P[rate_lim_edge_idx][1], \
                   "\tThis edge will be blocked."
             G[y][x][0] += self.M # block edge
             G[x][y][0] += self.M # block edge
@@ -124,12 +136,14 @@ class K_Distinct_Paths(object):
             # the priority queue starts with only the owner of the rate-limiting edge
             pq_m.add_with_priority(y,G[y][x][0])
             red_vertices = self.marchetti_colouring(G, pq_m, sp_tree)
-            print "\nThe vertices that are coloured red are:\n", red_vertices
+            #print "\nThe vertices that are coloured red are:\n", red_vertices
             self.marchetti_process_reds(G, pq_k, red_vertices)
             print "\n>>> PATH # %i\n" % (path_i+2)
             P = self.trace_path(G)
             sp_tree = K_Distinct_Paths.get_shortest_path_tree(self.prev)
             self.process_writing(P, G, min_energies, ts_energies, path_i+2)
+        rate_lim_edge_idx, y, x = self.get_rle(P,self.rle_defn,G,min_energies,ts_energies)
+        read_mindata.write_rlc(G[y][x][1],P[rate_lim_edge_idx][1],self.dist[self.t-1],path_i+1)
 
     '''Find vertices that are coloured "red"'''
     def marchetti_colouring(self, G, pq_m, sp_tree):
@@ -196,7 +210,9 @@ class K_Distinct_Paths(object):
                         self.dist[h-1] = f_level_z
                         self.prev[h-1] = z
                         pq_q.decrease_priority(h,f_level_z)
-        if self.prev[self.t-1] == -1: quit("\nTerminating: No shortest path to end node %i" % self.t)
+        if self.prev[self.t-1] == -1:
+            if self.write_mdf_all: self.process_writing(None,None,None,None,None,disconn=True)
+            quit("\nTerminating: No shortest path to end node %i" % self.t)
 
     def trace_path(self, G):
         P = [] # shortest path
@@ -223,15 +239,16 @@ class K_Distinct_Paths(object):
         print "%i steps along fastest path" % len(P)
         return P
 
-    def process_writing(self, path, G, min_energies, ts_energies, path_no):
-        if self.write_epath: read_mindata.write_epath(path, G, min_energies, ts_energies, path_no)
-        if self.write_mdf: read_mindata.write_mindatafastest(path, path_no)
-        if self.write_mdf_all:
-            for step in path:
-                if self.in_mdf[step[0]] == False: self.in_mdf[step[0]] = True
-            if path_no == self.k: read_mindata.write_mindatafastestall(self.in_mdf)
+    def process_writing(self, path, G, min_energies, ts_energies, path_no, disconn=False):
+        if self.write_epath and not disconn: read_mindata.write_epath(path, G, min_energies, ts_energies, path_no)
+        if self.write_mdf and not disconn: read_mindata.write_mindatafastest(path, path_no)
+        if self.write_mdf_all and not disconn:
+            if not disconn:
+                for step in path:
+                    if self.in_mdf[step[0]] == False: self.in_mdf[step[0]] = True
+            if path_no == self.k or disconn: read_mindata.write_mindatafastestall(self.in_mdf)
 
-    def calc_edge_costs(self, E_TS, E_min1, E_min2, frq_min1, frq_min2=None, frq_ts=None, \
+    def calc_edge_costs(self, E_TS, E_min1, E_min2, frq_min1=None, frq_min2=None, frq_ts=None, \
                         min1_idx=None, min2_idx=None):
         if self.costfunc == "noe_ts": 
             ts_cost1 = np.exp(E_TS/(K_Distinct_Paths.k_B*self.T))
@@ -265,19 +282,29 @@ class K_Distinct_Paths(object):
             weights_ps = read_mindata.read_psdump()
         for i in range(1,np.shape(min_energies)[0]+1): construct_graph1.add_vertex(i)
         for i in range(1,np.shape(ts_energies)[0]+1):
+            ts_update = False
             # need to account for if transition state does not connect two different minima ("dead" TSs)
             if ts_conns[i-1,0]==ts_conns[i-1,1]: continue
             # account for more than one TS connecting a pair of minima - only interested in lowest-energy TS
             try:
                 old_ts_id = construct_graph1.G[ts_conns[i-1,0]][ts_conns[i-1,1]][1]
-                if ts_energies[i-1] <= ts_energies[old_ts_id-1]: # disregard old TS, proceed to add this TS
+                # if not using weights dumped from Fortran script, then: disregard old TS, add this TS
+                if ts_energies[i-1] <= ts_energies[old_ts_id-1] and self.costfunc!="fromfile":
                     construct_graph1.del_edge(ts_conns[i-1,0],ts_conns[i-1,1])
                     construct_graph1.del_edge(ts_conns[i-1,1],ts_conns[i-1,0])
-                else: # disregard this TS, keep old TS
-                    continue
+                # if using the Fortran script, need to account for the fact that the Fortran script assigns an
+                # 'averaged' weight to the final TS connecting a given pair of minima that is encountered, whereas
+                # we want this weight assigned to the lowest-energy transition state
+                elif self.costfunc=="fromfile":
+                    ts_update = True # updating the costs for this pair of edges
+                    construct_graph1.G[ts_conns[i-1,0]][ts_conns[i-1,1]][0] = weights_ps[i-1,0]
+                    construct_graph1.G[ts_conns[i-1,1]][ts_conns[i-1,0]][0] = weights_ps[i-1,1]
+                    if ts_energies[i-1] <= ts_energies[old_ts_id-1]: # update TS IDs for this pair of edges
+                        construct_graph1.G[ts_conns[i-1,0]][ts_conns[i-1,1]][1] = i
+                        construct_graph1.G[ts_conns[i-1,1]][ts_conns[i-1,0]][1] = i
             except KeyError: # no connection exists for these minima yet
-                #print "excepting KeyError; TS:", i
                 pass
+            if ts_update: continue
             if min_frqs is None and weights_ps is None:
                 ts_cost1, ts_cost2 = self.calc_edge_costs(ts_energies[i-1],min_energies[ts_conns[i-1,0]-1], \
                                          min_energies[ts_conns[i-1,1]-1])
@@ -286,7 +313,10 @@ class K_Distinct_Paths(object):
                                          min_energies[ts_conns[i-1,1]-1],min_frqs[ts_conns[i-1,0]-1], \
                                          min_frqs[ts_conns[i-1,1]-1],ts_frqs[i-1],ts_conns[i-1,0],ts_conns[i-1,1])
             elif weights_ps is not None:
+            ##    if weights_ps[i-1,0]==0. and weights_ps[i-1,1]==0.: continue # quack
                 ts_cost1, ts_cost2 = weights_ps[i-1,0], weights_ps[i-1,1]
+            # happens when there is another TS (with higher ID) that connects the same pair of minima
+            ##if ts_cost1==0. or ts_cost2==0.: continue
             construct_graph1.add_edge(ts_conns[i-1,0],ts_conns[i-1,1],ts_cost1,i)
             construct_graph1.add_edge(ts_conns[i-1,1],ts_conns[i-1,0],ts_cost2,i) # "bidirected" adjacency list
         return construct_graph1.G
@@ -351,7 +381,6 @@ if __name__ == "__main__":
     else: # don't read frqs
         min_energies, ts_energies, ts_conns = read_mindata.get_data(mindataf,tsdataf,read_frqs=False)
         G = k_distinct_paths1.build_graph(min_energies, ts_energies, ts_conns)
-    ## WARNING - THIS MAY CAUSE A CRASH
     k_distinct_paths1.dijkstra_ktn(G, min_energies, ts_energies)
     '''
     # A TOY TEST PROBLEM
