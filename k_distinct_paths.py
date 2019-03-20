@@ -27,11 +27,11 @@ class K_Distinct_Paths(object):
 
     def __init__(self):
         ### PARAMS - update as desired
-        self.k = 5            # no. of paths to find
+        self.k = 100          # no. of paths to find
         self.M = float("inf") # a large number for effective blocking of edges
         self.T = 298.         # temperature / K (used to calculate inverse Boltzmann weights in Noe scheme)
-        self.s = 7            # start node (=1 for example min.data file) (=min.A for DIRECTION AB)
-        self.t = 1            # end node (=3345 for example min.data file, =17 for toy problem, =2 for min.data.removed)
+        self.s = 22           # start node (=1 for example min.data file) (=min.A for DIRECTION AB)
+        self.t = 868          # end node (=3345 for example min.data file, =17 for toy problem, =2 for min.data.removed)
         self.costfunc = "fromfile"  # choose a function for calculating the edge weights based on TS energies. Options:
                                     # noe_ts: Noe's scheme based on inverse Boltzmann weighting of TS energies
                                     # noe_b: Noe's scheme based on inverse Boltzmann weighting of "edge barriers"
@@ -43,14 +43,16 @@ class K_Distinct_Paths(object):
                                     # ts_energy: the RLE is that correspond to the TS with the highest energy
         self.Natoms = 138           # only needed if costfunc is "wales"
         self.write_epath = True     # write Epath.<PATH> files Y/N
-        self.write_mdf = True       # write min.data.fastest.<PATH> files Y/N
-        self.write_mdf_all = True   # write min.data.fastest.all file Y/N
+        self.write_mdf = True       # write min.data.fastest.<PATH> and ts.data.fastest.<PATH> files Y/N
+        self.write_mdf_all = True   # write min.data.fastest.all and ts.data.fastest.all files Y/N
 
     '''Implementation of Dijkstra's algorithm using a min-priority queue. Used to find shortest path and to find
     corresponding shortest path tree for use in Marchetti-Spaccamella algorithm'''
     def dijkstra_ktn(self, G, min_energies=None, ts_energies=None):
         n_nodes = len(G)
-        if self.write_mdf_all: self.in_mdf = {i: False for i in range(1,n_nodes+1)}
+        if self.write_mdf_all:
+            self.in_mdf = {i: False for i in range(1,n_nodes+1)}
+            self.in_tdf = {i: False for i in range(1,self.n_ts+1)}
         self.dist = [float("inf")]*n_nodes
         self.dist[self.s-1] = 0. # start vertex has zero distance
         self.prev = [-1]*n_nodes # parents are initially null
@@ -67,7 +69,6 @@ class K_Distinct_Paths(object):
             except pq1.QueueError:
 #                print "QueueError was raised in Dijkstra"
                 break
-#            print "u is:" , u, "dist_u is:", dist_u
             for v, dist_v in G[u].iteritems():
                 alt = self.dist[u-1] + dist_v[0]
                 if alt < self.dist[v-1]:
@@ -135,6 +136,7 @@ class K_Distinct_Paths(object):
             pq_k = K_Distinct_Paths.Priority_Queue()
             # the priority queue starts with only the owner of the rate-limiting edge
             pq_m.add_with_priority(y,G[y][x][0])
+            self.red = [False]*len(self.dist) # all nodes are initially not red
             red_vertices = self.marchetti_colouring(G, pq_m, sp_tree)
             #print "\nThe vertices that are coloured red are:\n", red_vertices
             self.marchetti_process_reds(G, pq_k, red_vertices)
@@ -143,7 +145,7 @@ class K_Distinct_Paths(object):
             sp_tree = K_Distinct_Paths.get_shortest_path_tree(self.prev)
             self.process_writing(P, G, min_energies, ts_energies, path_i+2)
         rate_lim_edge_idx, y, x = self.get_rle(P,self.rle_defn,G,min_energies,ts_energies)
-        read_mindata.write_rlc(G[y][x][1],P[rate_lim_edge_idx][1],self.dist[self.t-1],path_i+1)
+        read_mindata.write_rlc(G[y][x][1],P[rate_lim_edge_idx][1],self.dist[self.t-1],path_i+2)
 
     '''Find vertices that are coloured "red"'''
     def marchetti_colouring(self, G, pq_m, sp_tree):
@@ -167,6 +169,7 @@ class K_Distinct_Paths(object):
                     pass
             if not nonred_shorter:
                 marchetti_colours[z] = 2 # vertex coloured "red"
+                self.red[z-1] = True
                 children = sp_tree[z]
                 while children: # trace the shortest path tree to find the children of z and add to queue
                     child = children.pop()
@@ -181,10 +184,9 @@ class K_Distinct_Paths(object):
             u = None # the best nonred neighbour
             f_level_z_best = float("inf")
             for q, dist_q in G[z].iteritems():
-                if q not in red_vertices:
+                if not self.red[q-1]:
                     nonred_nbr = True
                     qz_edgecost = G[q][z][0]
-#                    if q==760: print "z:", z, "q:", q, "qz_edgecost:", qz_edgecost
                     f_level_z = self.dist[q-1] + qz_edgecost
                     if u is None or f_level_z < f_level_z_best: # found a new best nonred neighbour u
                         u = q
@@ -204,7 +206,7 @@ class K_Distinct_Paths(object):
             except pq_q.QueueError:
                 break
             for h, dist_h in G[z].iteritems():
-                if h in red_vertices:
+                if self.red[h-1]:
                     zh_edgecost = G[z][h][0]
                     f_level_z = self.dist[z-1] + zh_edgecost
                     if f_level_z < self.dist[h-1]:
@@ -242,12 +244,19 @@ class K_Distinct_Paths(object):
 
     def process_writing(self, path, G, min_energies, ts_energies, path_no, disconn=False):
         if self.write_epath and not disconn: read_mindata.write_epath(path, G, min_energies, ts_energies, path_no)
-        if self.write_mdf and not disconn: read_mindata.write_mindatafastest(path, path_no)
+        if self.write_mdf and not disconn:
+            read_mindata.write_mindatafastest(path, path_no)
+            read_mindata.write_tsdatafastest(G, path, path_no)
         if self.write_mdf_all and not disconn:
             if not disconn:
                 for step in path:
                     if self.in_mdf[step[0]] == False: self.in_mdf[step[0]] = True
-            if path_no == self.k or disconn: read_mindata.write_mindatafastestall(self.in_mdf)
+                for n_step in range(len(path)-1):
+                    ts_idx = G[path[n_step][0]][path[n_step+1][0]][1]
+                    if self.in_tdf[ts_idx] == False: self.in_tdf[ts_idx] = True
+            if path_no == self.k or disconn:
+                read_mindata.write_mindatafastestall(self.in_mdf,0)
+                read_mindata.write_mindatafastestall(self.in_tdf,1)
 
     def calc_edge_costs(self, E_TS, E_min1, E_min2, frq_min1=None, frq_min2=None, frq_ts=None, \
                         min1_idx=None, min2_idx=None):
@@ -276,6 +285,7 @@ class K_Distinct_Paths(object):
 
     def build_graph(self, min_energies, ts_energies, ts_conns, min_frqs=None, ts_frqs=None):
         construct_graph1 = K_Distinct_Paths.Construct_Graph()
+        self.n_ts = np.shape(ts_energies)[0]
         weights_ps = None
         if self.costfunc == "wales":
             if min_frqs is None or ts_frqs is None: quit("Must provide frqs for this energy function")

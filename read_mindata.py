@@ -56,8 +56,16 @@ def write_mindatafastest(path, path_no):
     with open("min.data.fastest."+str(path_no),"w") as mdf_f:
         for idx in idcs_on_path: mdf_f.write(str(idx)+"\n")
 
-def write_mindatafastestall(in_mdf):
-    with open("min.data.fastest.all","w") as mdfa_f:
+def write_tsdatafastest(G, path, path_no):
+    ts_idcs_on_path = sorted(G[path[n_step][0]][path[n_step+1][0]][1] \
+                      for n_step in range(len(path)-1))
+    with open("ts.data.fastest."+str(path_no),"w") as tdf_f:
+        for idx in ts_idcs_on_path: tdf_f.write(str(idx)+"\n")
+
+def write_mindatafastestall(in_mdf,min_or_ts):
+    if min_or_ts==0: fname = "min.data.fastest.all"
+    elif min_or_ts==1: fname = "ts.data.fastest.all"
+    with open(fname,"w") as mdfa_f:
         for v in in_mdf.iterkeys():
             if in_mdf[v] is True: mdfa_f.write(str(v)+"\n")
 
@@ -77,6 +85,12 @@ def write_epath(path, G, min_energies, ts_energies, path_no):
             ts_idx = G[path[n_step][0]][next_step_min][1]
             epath_f.write(str(ts_energies[ts_idx-1])+"\t")
             epath_f.write(str(ts_idx)+"\n")
+
+''' write to a file containing information on the paths and rate-limiting edges
+    format: rate-limiting TS ID / TS cost / path cost / path no. '''
+def write_rlc(ts_id,ts_cost,path_cost,path_no):
+    with open("rate_lim_cut.dat","a") as rlcf:
+        rlcf.write("%5i   %.7f   %.10f  %3i\n" % (ts_id,ts_cost,path_cost,path_no))
 
 '''Calculate canonical rate constants (Wales adjacency matrix)'''
 def calc_rate_const(E_TS,E_min1,E_min2,frq_min1,frq_min2,frq_ts,Natoms,T,s,t, \

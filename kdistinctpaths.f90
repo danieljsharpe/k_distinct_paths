@@ -216,6 +216,8 @@ CHARACTER(LEN=9) :: FNAME
 
 !PRINT *, 'called PRINT_PATH_KDP()'
 
+INTEGER :: RLEDGE_DEFN=0
+
 IF (ASSOCIATED(RLEDGEPTR)) NULLIFY(RLEDGEPTR)
 NULLIFY(TSEDGEPTR)
 FMTDESC = '(I3.3)'
@@ -233,7 +235,11 @@ DO WHILE (ASSOCIATED(SP_TREE(i)%PARENT_NODE))
     TSEDGEPTR%INFASTESTALL = .TRUE.
     SP_TREE(i)%PARENT_NODE%INFASTESTALL = .TRUE.
     SUMW = SUMW + TSEDGEPTR%W
-    IF (.NOT. ASSOCIATED(RLEDGEPTR) .OR. TSEDGEPTR%W > RLEDGEPTR%W) THEN
+    IF (.NOT. ASSOCIATED(RLEDGEPTR) .OR. (TSEDGEPTR%W > RLEDGEPTR%W .AND. RLEDGE_DEFN==2)) THEN
+        RLEDGEPTR => TSEDGEPTR
+    ELSE IF (RLEDGE_DEFN==1) THEN
+        ! RLEDGEPTR has max barrier height
+    ELSE IF ((ETS(TSEDGEPTR%TS_ID) > ETS(RLEDGEPTR%TS_ID)) .AND. RLEDGE_DEFN==0) THEN
         RLEDGEPTR => TSEDGEPTR
     ENDIF
     PRINT *, 'min:',SP_TREE(i)%PARENT_NODE%MIN_ID,'ts:',SP_TREE(i)%PARENT_TS%TS_ID,'w:',SP_TREE(i)%PARENT_TS%W, &
@@ -315,11 +321,6 @@ IF (ALLOCATED(SP_TREE)) DEALLOCATE(SP_TREE)
 ALLOCATE(SP_TREE(NMIN))
 
 !!! build the array DMATMC containing TS weights
-! dummy / test values
-!DO i = 1, NTS
-!    DMATMC(i,1) = 1.5
-!    DMATMC(i,2) = 2.0
-!ENDDO
 PRINT *, 'kdistinctpaths> setting up rate constants'
 CALL RATECONST_SETUP(KSUM,DEADTS,NDEAD,.FALSE.,CUT_UNDERFLOW)
 PRINT *, 'kdistinctpaths> setting up adjacency matrix'
@@ -382,6 +383,13 @@ ENDDO
 IF (KDPDUMPEDGEST) THEN ! dump the edge weights to a file kdp_tsedges.dat to be read by Python script
     OPEN(7,FILE="kdp_tsedges.dat")
     DO i = 1, NTS
+        ! IF ((TS_EDGES(i)%W==0.) .AND. (TS_EDGES(i+NTS)%W/=0.)) THEN
+        !     WRITE(7,*) HUGE(0.D0), TS_EDGES(i+NTS)%W
+        ! ELSEIF ((TS_EDGES(i)%W/=0.) .AND. (TS_EDGES(i+NTS)%W==0.)) THEN
+        !     WRITE(7,*) TS_EDGES(i)%W, HUGE(0.D0)
+        ! ELSE
+        !     WRITE(7,*) TS_EDGES(i)%W, TS_EDGES(i+NTS)%W ! NB zero weights indicate "dead" TS
+        ! ENDIF
         WRITE(7,*) TS_EDGES(i)%W, TS_EDGES(i+NTS)%W ! NB zero weights indicate "dead" TS
     ENDDO
     CLOSE(7)
@@ -583,7 +591,6 @@ DO WHILE (KDP_PQ%PQ_SZ>0)
             STOP
         ENDIF
         MINNODEPTR%RED = .TRUE.
-        !PRINT *, 'Node',MINNODEPTR%MIN_ID,'is red'
         ! keep a linked list of the nodes coloured red
         IF (.NOT. ASSOCIATED(HEADLLRED)) THEN
             !PRINT *, 'assigning HEADLLRED%NODE_INLIST'
@@ -616,13 +623,13 @@ DO WHILE (KDP_PQ%PQ_SZ>0)
     NULLIFY(DYNLLRED%NEXTLLENTRY)
 ENDDO
 
-!PRINT *, 'the following nodes have been queued by MARCHETTI_COLOURING routine:'
-!NULLIFY(MINNODEPTR)
-!DO WHILE (KDP_PQ%PQ_SZ>0)
-!    PQENTRYOBJ = KDP_PQ%TOP()
-!    MINNODEPTR => PQENTRYOBJ%PQ_NODEPTR
-!    PRINT *, 'min idx: ', MINNODEPTR%MIN_ID, 'priority value: ',PQENTRYOBJ%PR
-!ENDDO
+PRINT *, 'the following nodes have been queued by MARCHETTI_COLOURING routine (i.e. are RED):'
+NULLIFY(MINNODEPTR)
+DO WHILE (KDP_PQ%PQ_SZ>0)
+    PQENTRYOBJ = KDP_PQ%TOP()
+    MINNODEPTR => PQENTRYOBJ%PQ_NODEPTR
+    PRINT *, 'min idx: ', MINNODEPTR%MIN_ID, 'priority value: ',PQENTRYOBJ%PR
+ENDDO
 
 PRINT *, 'length of linked list (number of RED nodes):', n
 PRINT *, 'the child nodes are:'
@@ -659,8 +666,6 @@ TYPE(PQ_ENTRY) :: PQENTRYOBJ
 TYPE(NODE), POINTER :: MINNODEPTR, BESTNONREDNBR
 TYPE(EDGE), POINTER :: TSEDGEPTR, BESTNBREDGE
 
-PRINT *, 'Called MARCHETTI_PROCESS_REDS()'
-
 n = 0
 NULLIFY(MINNODEPTR,TSEDGEPTR)
 DYNLLRED => HEADLLRED
@@ -669,26 +674,25 @@ DO WHILE (ASSOCIATED(DYNLLRED%NEXTLLENTRY))
     FLVLZBEST = HUGE(0.D0)
     NONRED_NBR = .FALSE.
     MINNODEPTR => DYNLLRED%NODE_INLIST
-    !PRINT *, ''
     !PRINT *, 'set MINNODEPTR to min',MINNODEPTR%MIN_ID
     ! loop over neighbours of the current red node
-    TSEDGEPTR => MINNODEPTR%TOP_FROM
+    TSEDGEPTR => MINNODEPTR%TOP_TO
     !PRINT *, 'looping over neighbours of node',MINNODEPTR%MIN_ID
     DO WHILE (ASSOCIATED(TSEDGEPTR))
         !PRINT *, 'TS ID:',TSEDGEPTR%TS_ID,'from',TSEDGEPTR%FROM_NODE%MIN_ID,'to ', TSEDGEPTR%TO_NODE%MIN_ID
-        IF (.NOT. TSEDGEPTR%TO_NODE%RED) THEN
+        IF (.NOT. TSEDGEPTR%FROM_NODE%RED) THEN
             !PRINT *, 'Found a nonred neighbour'
             NONRED_NBR = .TRUE.
-            FLVLZ = SP_TREE(TSEDGEPTR%TO_NODE%MIN_ID)%CURR_DIST + TSEDGEPTR%W
+            FLVLZ = SP_TREE(TSEDGEPTR%FROM_NODE%MIN_ID)%CURR_DIST + TSEDGEPTR%W
             IF (.NOT. ASSOCIATED(BESTNONREDNBR) .OR. FLVLZ < FLVLZBEST) THEN
                 !PRINT *, 'This nonred neighbour is the new best nonred neighbour'
-                BESTNONREDNBR => TSEDGEPTR%TO_NODE
+                BESTNONREDNBR => TSEDGEPTR%FROM_NODE
                 BESTNBREDGE => TSEDGEPTR
                 EDGECOST = TSEDGEPTR%W
                 FLVLZBEST = FLVLZ
             ENDIF
         ENDIF
-        TSEDGEPTR => TSEDGEPTR%NEXT_FROM
+        TSEDGEPTR => TSEDGEPTR%NEXT_TO
     ENDDO
     IF (.NOT. NONRED_NBR) THEN ! disclude this node from the shortest path tree
         !PRINT *, 'this node has no nonred neighbour'
