@@ -213,6 +213,7 @@ TYPE(EDGE), POINTER :: TSEDGEPTR, RLEDGEPTR
 CHARACTER(LEN=8) :: FMTDESC ! format descriptor
 CHARACTER(LEN=4) :: X1 ! intermediate for converting int to string using an 'internal file'
 CHARACTER(LEN=11) :: FNAME
+LOGICAL :: FILE_EXIST
 
 IF (ASSOCIATED(RLEDGEPTR)) NULLIFY(RLEDGEPTR)
 NULLIFY(TSEDGEPTR)
@@ -257,6 +258,15 @@ PRINT *, 'from:',RLEDGEPTR%FROM_NODE%MIN_ID,'to:',RLEDGEPTR%TO_NODE%MIN_ID,'w:',
 NULLIFY(TSEDGEPTR)
 CLOSE(6)
 PRINT *, 'sum of weights:', SUMW, 'exp of sum of weights:', EXP(SUMW)
+
+INQUIRE(FILE="rate_lim_cut.dat",EXIST=FILE_EXIST)
+IF (FILE_EXIST) THEN
+    OPEN(9,FILE="rate_lim_cut.dat",STATUS="old",POSITION="append",ACTION="write")
+ELSE
+    OPEN(9,FILE="rate_lim_cut.dat",STATUS="new",ACTION="write")
+ENDIF
+WRITE(9,*) RLEDGEPTR%TS_ID, RLEDGEPTR%W, SUMW, k
+CLOSE(9)
 
 END SUBROUTINE PRINT_PATH_KDP
 
@@ -554,7 +564,7 @@ DO k = 2, KPATHS
     ! Now find nodes in the shortest path tree where we need to check for alternative connections
     CALL MARCHETTI_COLOURING()
     CALL KDP_PQ%DESTROY()
-    CALL MARCHETTI_PROCESS_REDS(LJ2)
+    CALL MARCHETTI_PROCESS_REDS(LJ2,LJ1)
     CALL KDP_PQ%DESTROY()
 
     CALL PRINT_PATH_KDP(RLEDGEPTR,LJ2,k)
@@ -616,8 +626,8 @@ DO WHILE (KDP_PQ%PQ_SZ>0)
     TSEDGEPTR => MINNODEPTR%TOP_FROM
     ! looping over FROM edges to find any NONRED_SHORTER nodes
     DO WHILE (ASSOCIATED(TSEDGEPTR))
-        IF (.NOT. MINNODEPTR%RED .AND. &
-            SP_TREE(TSEDGEPTR%TO_NODE%MIN_ID)%CURR_DIST+TSEDGEPTR%W==SP_TREE(TSEDGEPTR%FROM_NODE%MIN_ID)%CURR_DIST) THEN ! quack check this
+        IF (.NOT. MINNODEPTR%RED .AND. TSEDGEPTR%W>1.D-10 .AND. & ! quack check this next statement
+            SP_TREE(TSEDGEPTR%TO_NODE%MIN_ID)%CURR_DIST+TSEDGEPTR%W==SP_TREE(TSEDGEPTR%FROM_NODE%MIN_ID)%CURR_DIST) THEN
             NONRED_SHORTER = .TRUE.
             ! here vertex should be coloured 'pink', but with double precision edges this situation rarely happens
         ENDIF
@@ -664,7 +674,7 @@ ENDDO
 !NULLIFY(DYNLLRED)
 !DYNLLRED => HEADLLRED
 !DO WHILE (ASSOCIATED(DYNLLRED%NEXTLLENTRY))
-!    ! PRINT *, DYNLLRED%NODE_INLIST%MIN_ID
+!    PRINT *, DYNLLRED%NODE_INLIST%MIN_ID
 !    DYNLLRED => DYNLLRED%NEXTLLENTRY
 !ENDDO
 
@@ -679,7 +689,7 @@ END SUBROUTINE MARCHETTI_COLOURING
 ! Processes vertices that are coloured "red" to find best alternative parents and
 ! make updates to the shortest path tree accordingly
 !-------------------------------------------------------------------------------
-SUBROUTINE MARCHETTI_PROCESS_REDS(LJ2)
+SUBROUTINE MARCHETTI_PROCESS_REDS(LJ2,LJ1)
 
 USE COMMONS
 USE GRAPH_KDP
@@ -687,7 +697,7 @@ USE TREE_KDP
 USE PRIORITY_QUEUE_KDP
 IMPLICIT NONE
 
-INTEGER :: LJ2, n
+INTEGER :: LJ2, LJ1, n
 LOGICAL :: NONRED_NBR
 DOUBLE PRECISION :: FLVLZ, FLVLZBEST, EDGECOST
 TYPE(PQ_ENTRY) :: PQENTRYOBJ
@@ -762,10 +772,23 @@ DO WHILE (KDP_PQ%PQ_SZ>0)
     ENDDO
 ENDDO
 
+NULLIFY(MINNODEPTR)
 IF (.NOT. ASSOCIATED(SP_TREE(LJ2)%PARENT_NODE)) THEN
     PRINT *, 'kdistinctpaths> no existing path to endpoint node',LJ2
     STOP
 ENDIF
+MINNODEPTR => SP_TREE(LJ2)%PARENT_NODE
+DO WHILE (.TRUE.)
+    IF (.NOT. ASSOCIATED(SP_TREE(MINNODEPTR%MIN_ID)%PARENT_NODE)) THEN
+        IF (MINNODEPTR%MIN_ID /= LJ1) THEN
+            PRINT *, 'kdistinctpaths> no existing path to endpoint node',LJ2
+            STOP
+        ELSE
+            EXIT
+        ENDIF
+    ENDIF
+    MINNODEPTR => SP_TREE(MINNODEPTR%MIN_ID)%PARENT_NODE
+ENDDO
 
 NULLIFY(MINNODEPTR,TSEDGEPTR)
 
@@ -814,6 +837,7 @@ DO i = 1, NMIN ! loop over all minima
             ENDIF
             SP_TREE(TSEDGEPTR%TO_NODE%MIN_ID)%PARENT_TS => TSEDGEPTR ! FROM n (parent) TO child ??? IS CORRECT
             TSEDGEPTR%CHILD = .TRUE. ! edge is included in shortest path tree
+
             ! use TS_EDGES to access weight in opposite direcn
             !SP_TREE(TSEDGEPTR%TO_NODE%MIN_ID)%PARENT_TS_2 => TS_EDGES(TSEDGEPTR+NTS)
             ! weight TO child FROM parent
