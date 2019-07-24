@@ -27,17 +27,17 @@ class K_Distinct_Paths(object):
 
     def __init__(self):
         ### PARAMS - update as desired
-        self.k = 100          # no. of paths to find
+        self.k = 15           # no. of paths to find
         self.M = float("inf") # a large number for effective blocking of edges
         self.T = 298.         # temperature / K (used to calculate inverse Boltzmann weights in Noe scheme)
-        self.s = 22           # start node (=1 for example min.data file) (=min.A for DIRECTION AB)
-        self.t = 868          # end node (=3345 for example min.data file, =17 for toy problem, =2 for min.data.removed)
+        self.s = 1            # start node (=1 for example min.data file) (=min.A for DIRECTION AB)
+        self.t = 2            # end node (=3345 for example min.data file, =17 for toy problem, =2 for min.data.removed)
         self.costfunc = "fromfile"  # choose a function for calculating the edge weights based on TS energies. Options:
                                     # noe_ts: Noe's scheme based on inverse Boltzmann weighting of TS energies
                                     # noe_b: Noe's scheme based on inverse Boltzmann weighting of "edge barriers"
                                     # evans: Evans' scheme based on a log-weighted adjacency matrix
                                     # fromfile: read a file "kdp_tsedges.dat" dumped by the PATHSAMPLE program
-        self.rle_defn = "ts_energy" # definition for what constitutes the rate-limiting edge (to be blocked). Options:
+        self.rle_defn = "absolute"  # definition for what constitutes the rate-limiting edge (to be blocked). Options:
                                     # absolute: the RLE is that with the greatest weight
                                     # barrier: the RLE is that corresponding to the largest energy barrier
                                     # ts_energy: the RLE is that correspond to the TS with the highest energy
@@ -138,7 +138,6 @@ class K_Distinct_Paths(object):
             pq_m.add_with_priority(y,G[y][x][0])
             self.red = [False]*len(self.dist) # all nodes are initially not red
             red_vertices = self.marchetti_colouring(G, pq_m, sp_tree)
-            #print "\nThe vertices that are coloured red are:\n", red_vertices
             self.marchetti_process_reds(G, pq_k, red_vertices)
             print "\n>>> PATH # %i\n" % (path_i+2)
             P = self.trace_path(G)

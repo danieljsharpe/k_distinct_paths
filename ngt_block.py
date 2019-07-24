@@ -12,14 +12,18 @@ Daniel J. Sharpe
 import subprocess
 import os.path
 
-### set the string for the location of the PATHSAMPLE executable ###
+### set the string for the location of the PATHSAMPLE executable, and other inputs ###
 ps_exec = "/home/djs244/PATHSAMPLE_DUMPINFOMAP"
-out_fname = "PS_ngt.out"
+out_fname = "PS_ngt.out" # name of output file for PATHSAMPLE to write to
+max_rle = -1 # set to > 0 to impose a limit on the no. of RLEs considered
 
 
-res = subprocess.check_output(["wc","-l","rate_lim_cut.dat"])
-n_rle = int(res.split()[0])
-print "Number of rate-limiting edges:", n_rle
+if not max_rle > 0:
+    res = subprocess.check_output(["wc","-l","rate_lim_cut.dat"])
+    n_rle = int(res.split()[0])
+    print "Number of rate-limiting edges:", n_rle
+else:
+    n_rle = max_rle
 
 rle_idcs = [0]*n_rle # list of indices for rate-limiting transition states, in order
 i = 0
